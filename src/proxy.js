@@ -299,17 +299,36 @@ async function handlePassthrough(cfg, req, res, rawBody, origin, { patchModels =
 // Patch fields onto real upstream model cards IN PLACE. Never replace a card:
 // a hand-maintained clone once lacked `truncation_policy` and Codex's strict
 // deserializer rejected the whole catalog.
+//
+// Two patch sources, applied in order:
+//   1. Transport steering (the WS-gap fix): Codex speaks WebSocket to models
+//      whose card advertises the "responses lite" transport, and WS traffic
+//      is an opaque tunnel our rule engine can't inspect. So every model with
+//      an active Route rule (or all models under routeAll) gets
+//      `use_responses_lite: false` stamped on, forcing NEW Codex threads onto
+//      HTTP POST where interception actually applies. When the rule turns
+//      off, the next catalog fetch serves the upstream truth again.
+//   2. Static `modelCardPatches` from config (e.g. context_window overrides),
+//      which win over transport steering on conflicts.
 function patchModelCards(cfg, body) {
-  const patches = cfg.modelCardPatches || {};
-  if (Object.keys(patches).length === 0) return body;
+  const staticPatches = cfg.modelCardPatches || {};
   let data;
   try { data = JSON.parse(body.toString('utf8')); } catch { return body; }
+
+  const routedIds = new Set();
+  for (const provider of cfg.providers || []) {
+    for (const model of provider.models || []) {
+      if (model.route) routedIds.add(model.id);
+    }
+  }
+
   const patchList = (items, key) => {
     if (!Array.isArray(items)) return;
     for (const item of items) {
       if (!item || typeof item !== 'object') continue;
       const id = item.slug || item[key];
-      if (patches[id]) Object.assign(item, patches[id]);
+      if (cfg.routeAll || routedIds.has(id)) item.use_responses_lite = false;
+      if (staticPatches[id]) Object.assign(item, staticPatches[id]);
     }
   };
   patchList(data.models, 'slug');
@@ -471,6 +490,6 @@ function start() {
   return { server, state };
 }
 
-module.exports = { createServer, start };
+module.exports = { createServer, start, patchModelCards };
 
 if (require.main === module) start();
