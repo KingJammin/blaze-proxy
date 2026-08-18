@@ -30,6 +30,18 @@ const tail = [];
 const tailClients = new Set();
 let requestCount = 0;
 
+// Models that asked to be served but have no rule in config. A hard-coded
+// model list goes stale every time a provider ships a new name, and the
+// symptom is silent: the request just passes through, with no toggle to find.
+// Recording them lets the UI offer the toggle instead.
+const unmanaged = new Map(); // model id → { count, lastSeen }
+
+function noteUnmanaged(cfg, modelId) {
+  if (!modelId || configLib.ruleFor(cfg, modelId)) return;
+  const prev = unmanaged.get(modelId);
+  unmanaged.set(modelId, { count: (prev?.count || 0) + 1, lastSeen: new Date().toISOString() });
+}
+
 function emitEvent(evt) {
   evt.ts = new Date().toISOString();
   tail.push(evt);
@@ -646,6 +658,7 @@ function handleControl(state, req, res) {
       version: require('../package.json').version,
       requestCount,
       apiKey: keychainLib.describeEndpointKey(state.cfg),
+      unmanaged: [...unmanaged.entries()].map(([id, v]) => ({ id, ...v })),
       config: safeCfg
     });
   }
@@ -776,6 +789,7 @@ function createServer(initialCfg) {
         model = sniffModel(decodeBody(rawBody, req.headers['content-encoding']));
       } catch { /* undecodable body → pass through untouched */ }
 
+      noteUnmanaged(cfg, model);
       if (model && configLib.shouldIntercept(cfg, model)) {
         const payload = JSON.parse(decodeBody(rawBody, req.headers['content-encoding']).toString('utf8'));
         const apiPath = isResponses ? '/responses' : '/chat/completions';
@@ -833,6 +847,14 @@ function start() {
     catch { console.error(`blaze-proxy: WARNING upstreams.${name} is not a valid URL (${JSON.stringify(value)}) — requests routed there will 502. Use a full URL or the literal "endpoint".`); }
   }
   const { server, state } = createServer(cfg);
+
+  // Hand-edits to config.json apply without a restart (this cost real
+  // debugging time twice before it existed).
+  configLib.watch((next) => {
+    state.cfg = next;
+    emitEvent({ kind: 'config', route: 'reloaded-from-disk' });
+  });
+
   const host = process.env.BLAZE_HOST || '127.0.0.1';
   const port = Number(process.env.BLAZE_PORT || cfg.port);
   server.listen(port, host, () => {

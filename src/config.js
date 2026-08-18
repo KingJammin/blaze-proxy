@@ -27,6 +27,10 @@ const DEFAULTS = {
       models: [
         { id: 'gpt-5.6-terra', route: false, smart: false, dest: DEFAULT_DEST },
         { id: 'gpt-5.6-luna', route: false, smart: false, dest: DEFAULT_DEST },
+        { id: 'gpt-5.6-sol', route: false, smart: false, dest: DEFAULT_DEST },
+        { id: 'gpt-5.5', route: false, smart: false, dest: DEFAULT_DEST },
+        { id: 'gpt-5.4', route: false, smart: false, dest: DEFAULT_DEST },
+        { id: 'gpt-5.4-mini', route: false, smart: false, dest: DEFAULT_DEST },
         { id: 'gpt-5.3-codex-spark', route: true, smart: false, dest: DEFAULT_DEST, alias: true }
       ]
     },
@@ -122,11 +126,37 @@ function load() {
   return merged;
 }
 
+// Text of the last config WE wrote, so the watcher can tell our own saves
+// apart from someone editing the file by hand.
+let lastWritten = null;
+
 function save(cfg) {
   fs.mkdirSync(CONFIG_DIR, { recursive: true });
+  const text = JSON.stringify(cfg, null, 2) + '\n';
   const tmp = CONFIG_PATH + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2) + '\n');
+  fs.writeFileSync(tmp, text);
   fs.renameSync(tmp, CONFIG_PATH);
+  lastWritten = text;
+}
+
+// Reload config.json when it changes on disk. Hand-edits used to require a
+// restart, which cost real debugging time twice; now they apply live.
+// fs.watchFile (polling) rather than fs.watch: rename-based atomic writes
+// break watch descriptors, and 1s polling on one small file is free.
+function watch(onChange) {
+  fs.watchFile(CONFIG_PATH, { interval: 1000 }, () => {
+    let text;
+    try { text = fs.readFileSync(CONFIG_PATH, 'utf8'); } catch { return; }
+    if (text === lastWritten) return; // our own save — already in memory
+    let parsed;
+    try { parsed = JSON.parse(text); } catch (err) {
+      console.error(`blaze-proxy: config.json changed but is not valid JSON (${err.message}) — keeping the previous config`);
+      return;
+    }
+    lastWritten = text;
+    onChange(load());
+    console.log('blaze-proxy: config.json changed on disk — reloaded');
+  });
 }
 
 // Flatten providers into a model-id → rule lookup.
@@ -154,4 +184,4 @@ function destFor(cfg, modelId) {
   return (hit && hit.model.dest) || DEFAULT_DEST;
 }
 
-module.exports = { CONFIG_DIR, CONFIG_PATH, DEFAULTS, DEFAULT_DEST, load, save, ruleFor, shouldIntercept, destFor };
+module.exports = { CONFIG_DIR, CONFIG_PATH, DEFAULTS, DEFAULT_DEST, load, save, watch, ruleFor, shouldIntercept, destFor };

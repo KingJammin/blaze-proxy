@@ -50,6 +50,52 @@ function saveConfig() {
   }, 150);
 }
 
+// Models seen in traffic with no rule in config — a hard-coded list goes
+// stale whenever a provider ships a new name, so offer the toggle here
+// instead of letting the request pass through silently.
+function renderUnmanaged(list) {
+  const host = $('unmanaged');
+  if (!list || !list.length) { host.innerHTML = ''; return; }
+  host.innerHTML = `<div class="card">
+    <div class="pcard-head">
+      <span class="plogo" style="background:#3f3f46">?</span>
+      <div class="pname"><b>Seen in traffic, not configured</b><span class="cnt">${list.length} model${list.length > 1 ? 's' : ''} with no rule — passing through</span></div>
+    </div>
+  </div>`;
+  const card = host.querySelector('.card');
+  for (const m of list) {
+    const row = document.createElement('div');
+    row.className = 'row';
+    row.innerHTML = `<div class="m-name-wrap"><div class="m-name"><span></span></div><div class="dest-mini off"></div></div>
+      <button class="btn" style="grid-column: 2 / span 2">Manage</button>`;
+    row.querySelector('.m-name span').textContent = m.id;
+    row.querySelector('.dest-mini').textContent = `${m.count} request${m.count > 1 ? 's' : ''} · last ${(m.lastSeen || '').slice(11, 19)}`;
+    row.querySelector('button').addEventListener('click', () => {
+      // Adopt it under a Discovered provider so it gains a normal toggle.
+      let provider = config.providers.find((p) => p.id === 'discovered');
+      if (!provider) {
+        provider = { id: 'discovered', name: 'Discovered', passthrough: 'provider', models: [] };
+        config.providers.push(provider);
+      }
+      if (!provider.models.some((x) => x.id === m.id)) {
+        provider.models.push({ id: m.id, route: true, smart: false, dest: config.providers[0]?.models[0]?.dest || 'deepseek-ai/DeepSeek-V4-Flash-0731' });
+      }
+      saveConfig();
+      render();
+      refreshUnmanaged();
+    });
+    card.appendChild(row);
+  }
+}
+
+async function refreshUnmanaged() {
+  try {
+    const state = await fetchState();
+    const known = new Set(config.providers.flatMap((p) => p.models.map((m) => m.id)));
+    renderUnmanaged((state.unmanaged || []).filter((m) => !known.has(m.id)));
+  } catch { /* daemon unreachable — leave as-is */ }
+}
+
 function render() {
   document.body.classList.toggle('off', !config.proxyEnabled);
   $('masterToggle').classList.toggle('on', config.proxyEnabled);
@@ -286,6 +332,8 @@ function connectTail() {
     config = state.config;
     render();
     connectTail();
+    refreshUnmanaged();
+    setInterval(refreshUnmanaged, 15000);
   } catch {
     $('connState').textContent = `daemon not running on :${PORT}`;
     $('connState').classList.add('bad');
