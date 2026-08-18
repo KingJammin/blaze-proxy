@@ -82,8 +82,10 @@ async function main() {
         }
         const builds = t.clientBuilds();
         if (builds.length > 1) {
-          console.log(`  WARN  ${builds.length} client builds are running; machine-global env points them ALL here,`);
-          console.log('        and sandboxed/translocated copies resolve paths against their own HOME:');
+          console.log(`  WARN  ${builds.length} client builds are running. Machine-global env points them ALL here, and`);
+          console.log('        sandboxed/translocated copies resolve the CA path against their OWN home, so any build');
+          console.log('        that was not restarted after enabling still holds a stale value and will fail TLS.');
+          console.log('        RESTART EVERY BUILD LISTED BELOW (quitting one app is not enough):');
           for (const b of builds) console.log(`          pid ${b.pid} ${b.bundle}`);
         }
         const stale = t.staleClients(report.marker);

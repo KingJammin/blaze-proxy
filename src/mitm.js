@@ -18,8 +18,52 @@ const http = require('http');
 const https = require('https');
 const net = require('net');
 const tls = require('tls');
+const fzstd = require('fzstd');
 
 const transparent = require('./transparent');
+
+// The ChatGPT-native request body is NOT the public Responses API shape. It
+// carries ChatGPT-only fields, and a strict server rejects the whole request:
+// vLLM parses an unrecognised field into a pydantic ValidatorIterator and then
+// cannot pickle it across a tensor-parallel worker boundary —
+//   "cannot pickle 'pydantic_core._pydantic_core.ValidatorIterator' object"
+// — which failed EVERY conversation once transparent mode routed all traffic
+// through this path. So translate to the documented shape before handing it to
+// the engine: keep what the Responses API defines, drop the rest.
+const RESPONSES_API_FIELDS = new Set([
+  'model', 'input', 'instructions', 'stream', 'max_output_tokens',
+  'temperature', 'top_p', 'tools', 'tool_choice', 'parallel_tool_calls',
+  'reasoning', 'text', 'metadata', 'store', 'truncation', 'user'
+]);
+
+const droppedOnce = new Set();
+
+function normalizeNativePayload(payload, onDrop) {
+  if (!payload || typeof payload !== 'object') return payload;
+  const out = {};
+  for (const [key, value] of Object.entries(payload)) {
+    if (RESPONSES_API_FIELDS.has(key)) out[key] = value;
+    else if (onDrop && !droppedOnce.has(key)) { droppedOnce.add(key); onDrop(key); }
+  }
+  // ChatGPT ships bespoke tool types (local_shell, freeform apply_patch) that a
+  // generic endpoint does not model. Keep the standard ones; dropping an
+  // unknown tool costs a capability, sending it costs the whole request.
+  if (Array.isArray(out.tools)) {
+    out.tools = out.tools.filter((t) => {
+      const keep = t && (t.type === 'function' || t.type === 'web_search' || t.type === 'web_search_preview');
+      if (!keep && t?.type && !droppedOnce.has(`tool:${t.type}`)) {
+        droppedOnce.add(`tool:${t.type}`);
+        onDrop?.(`tool:${t.type}`);
+      }
+      return keep;
+    });
+    if (out.tools.length === 0) delete out.tools;
+  }
+  // `store: true` asks the server to persist the response server-side; a local
+  // endpoint has nowhere to put it.
+  if (out.store === true) out.store = false;
+  return out;
+}
 
 // Only these hosts are decrypted. Everything else is tunneled blind.
 const INTERCEPT_HOSTS = /(^|\.)(chatgpt\.com|openai\.com)$/;
@@ -60,14 +104,39 @@ function createMitmServer({ blazePort, onEvent }) {
 
       let out;
       if (isModelPost) {
-        // Hand to blaze's own engine: it sniffs the model (zstd-aware) and
-        // decides intercept vs pass, exactly as for a directly-configured client.
+        // Translate the ChatGPT-native body into the documented Responses
+        // shape before the engine sees it, then send it uncompressed so the
+        // content-encoding header can't disagree with the bytes.
+        let forwardBody = body;
+        let normalized = false;
+        try {
+          const encoding = (req.headers['content-encoding'] || '').toLowerCase();
+          const raw = encoding === 'zstd' ? Buffer.from(fzstd.decompress(new Uint8Array(body))) : body;
+          const parsed = JSON.parse(raw.toString('utf8'));
+          forwardBody = Buffer.from(JSON.stringify(normalizeNativePayload(parsed, (key) => {
+            emit({ kind: 'mitm', route: 'normalized', dest: host, status: 0, ms: 0, note: `dropped ChatGPT-only field: ${key}` });
+          })));
+          normalized = true;
+        } catch (err) {
+          // Unparsable → forward untouched rather than dropping the request.
+          emit({ kind: 'mitm', route: 'normalize-skipped', dest: host, status: 0, ms: 0, error: err.message });
+        }
+        const fwdHeaders = { ...headers, host: `127.0.0.1:${blazePort}`, 'content-length': forwardBody.length };
+        if (normalized) delete fwdHeaders['content-encoding'];
         out = http.request({
-          host: '127.0.0.1', port: blazePort, path: '/v1/responses', method: 'POST',
-          headers: { ...headers, host: `127.0.0.1:${blazePort}`, 'content-length': body.length }
+          host: '127.0.0.1', port: blazePort, path: '/v1/responses', method: 'POST', headers: fwdHeaders
         }, onUpstream);
         emit({ kind: 'mitm', route: 'to-engine', dest: host, status: 0, ms: 0 });
-      } else {
+        if (forwardBody.length) out.write(forwardBody);
+        out.on('error', (err) => {
+          emit({ kind: 'mitm', route: 'to-engine', dest: host, status: 502, error: err.message });
+          if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: `blaze transparent forward failed: ${err.message}`, type: 'proxy_error' } }));
+        });
+        out.end();
+        return;
+      }
+      {
         out = https.request({
           host, port: 443, path: req.url, method: req.method,
           headers: { ...headers, host }, servername: host
@@ -134,4 +203,4 @@ function createMitmServer({ blazePort, onEvent }) {
   return proxy;
 }
 
-module.exports = { createMitmServer, INTERCEPT_HOSTS, RESPONSES_RE };
+module.exports = { createMitmServer, INTERCEPT_HOSTS, RESPONSES_RE, normalizeNativePayload };
