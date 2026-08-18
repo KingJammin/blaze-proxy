@@ -84,6 +84,19 @@ const DEFAULTS = {
   // HTTP), gated by the hashed API keystore (blaze-proxy keys ...).
   // Empty = /mcp answers 404.
   mcpUpstream: '',
+  // 'apiKey' attaches the outbound endpoint key as Authorization on /mcp
+  // forwards (for chained gateways); 'none' preserves the v0.2.0 invariant
+  // that the MCP upstream never sees any credential.
+  mcpUpstreamAuth: 'none',
+  // Per-listener keystore enforcement for MODEL paths (everything except
+  // /mcp, which always requires keys, and /__blaze + /healthz).
+  // 'open' = no key required (default; matches pre-v0.3.0 behavior).
+  // 'keys' = requests must carry a valid bzp_ key from keys.json; the key is
+  //          stripped before forwarding. Use on listeners that front an edge
+  //          (e.g. ngrok → loopback): note that setting loopback to 'keys'
+  //          ALSO withdraws the control API's loopback trust — set
+  //          controlToken for on-box management in that case.
+  listenerAuth: { loopback: 'open', lan: 'open' },
   heartbeatSeconds: 12,
   upstreamAttempts: 3,
   upstreamRetryDelaySeconds: 3,
@@ -102,6 +115,7 @@ function load() {
   const merged = { ...structuredClone(DEFAULTS), ...cfg };
   // Deep-default only the maps whose absence would crash the router.
   merged.upstreams = { ...DEFAULTS.upstreams, ...(cfg.upstreams || {}) };
+  merged.listenerAuth = { ...DEFAULTS.listenerAuth, ...(cfg.listenerAuth || {}) };
   if (!Array.isArray(merged.providers) || merged.providers.length === 0) {
     merged.providers = structuredClone(DEFAULTS.providers);
   }

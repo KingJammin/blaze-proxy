@@ -205,6 +205,10 @@
     <div class="modal" role="dialog" aria-modal="true">
       <div class="modal-head"><h3>Settings</h3><button class="x" id="settingsClose" aria-label="Close">✕</button></div>
       <div class="modal-body">
+        <p class="field-label">API key</p>
+        <input class="field" id="apiKeyField" type="password" placeholder="bzp_…" spellcheck="false" autocomplete="off" aria-label="API key">
+        <div class="dest-hint" id="apiKeyHint">Not set. One key authorizes everything — model requests and MCP.</div>
+        <hr class="settings-sep">
         <p class="field-label">Endpoint</p>
         <input class="field" id="endpointField" spellcheck="false" aria-label="Endpoint">
         <div class="dest-hint">Where intercepted requests are served. Defaults to https://homeai.benpelo.com/v1.</div>

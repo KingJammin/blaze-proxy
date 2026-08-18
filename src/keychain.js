@@ -4,6 +4,8 @@ const { execFileSync } = require('child_process');
 
 let cached;
 
+function clearCache() { cached = undefined; }
+
 // Resolve the bearer key for the configured endpoint.
 // Order: explicit env override → config value → macOS keychain lookup.
 function endpointKey(cfg) {
@@ -27,4 +29,30 @@ function endpointKey(cfg) {
   return '';
 }
 
-module.exports = { endpointKey };
+// Store a new outbound key where the current endpointAuth reads from:
+// macOS keychain when configured (and available), else the config file.
+// Returns 'keychain' or 'config'; on 'config' the caller must persist cfg.
+function storeEndpointKey(cfg, key) {
+  clearCache();
+  const auth = cfg.endpointAuth || {};
+  if (auth.type === 'keychain' && process.platform === 'darwin') {
+    execFileSync('/usr/bin/security', [
+      'add-generic-password', '-U',
+      '-a', auth.account || process.env.USER,
+      '-s', auth.service,
+      '-w', key
+    ], { timeout: 5000 });
+    return 'keychain';
+  }
+  cfg.endpointAuth = { type: 'value', value: key };
+  return 'config';
+}
+
+// Safe descriptor for the UI: never the key itself.
+function describeEndpointKey(cfg) {
+  const key = endpointKey(cfg);
+  if (!key) return { set: false };
+  return { set: true, last4: key.slice(-4) };
+}
+
+module.exports = { endpointKey, storeEndpointKey, describeEndpointKey, clearCache };

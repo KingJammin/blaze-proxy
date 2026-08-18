@@ -56,6 +56,10 @@ The endpoint is where intercepted requests go — any server speaking the OpenAI
 
 ### Run at login (macOS)
 
+> Use this **only** if you want routing independent of the desktop app. With the
+> launchd agent loaded, `KeepAlive` will respawn the daemon moments after the app
+> shuts it down on quit, defeating app-owned lifetime. Pick one model, not both.
+
 ```xml
 <!-- ~/Library/LaunchAgents/com.<you>.blaze-proxy.plist -->
 <?xml version="1.0" encoding="UTF-8"?>
@@ -102,11 +106,23 @@ blaze-proxy keys revoke --name ben    # takes effect on the next request, no res
 
 Keys live hashed in `~/.blaze-proxy/keys.json` (mode 600, re-read on change). The gateway strips the key before forwarding — your MCP upstream never sees it.
 
+### One key for everything (listener-scoped auth)
+
+The same `bzp_` keys that gate `/mcp` can gate **model paths** too, per listener class:
+
+```json
+"listenerAuth": { "loopback": "keys", "lan": "open" }
+```
+
+`keys` mode requires a valid keystore key on `/v1/*` (HTTP **and** WebSocket upgrades) and strips it before forwarding; `open` (the default) keeps pre-v0.3.0 behavior. Classes are decided by the *listener-side* address, so a fleet can keep its LAN listener open for pods while an ngrok tunnel fronting the loopback listener is fully key-gated. **Setting `loopback: "keys"` also withdraws the control API's loopback trust** — set `controlToken` first or you'll lock yourself out of management.
+
+In the app, Settings → **API key** stores your personal `bzp_` key (macOS keychain; masked, never echoed) and the daemon uses it as the outbound Authorization for intercepted model requests — and for `/mcp` forwards when `mcpUpstreamAuth: "apiKey"` is set (chained-gateway mode; the default `"none"` keeps the upstream credential-free).
+
 ### Control-plane security
 
 Loopback callers always have control access (that's how the UI talks to the daemon). Remote callers are refused unless `controlToken` is set in config and sent as `Authorization: Bearer <token>` — with no token configured, a LAN-bound instance exposes the *proxy* to the network but never a config-rewrite endpoint. Instances started with a non-loopback `BLAZE_HOST` also get a loopback listener on the same port, so on-box management never needs the token. `/healthz` is always open for probes.
 
-The Electron app is a pure client of `/__blaze/*` — closing the window never stops routing.
+The Electron app owns proxy lifetime: opening it starts the daemon if one isn't already up, and quitting it calls `POST /__blaze/shutdown` to stop routing. Run the daemon under launchd instead (see "Run at login") if you want routing to survive the app being closed — the two models are mutually exclusive.
 
 ## Roadmap
 

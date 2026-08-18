@@ -12,7 +12,8 @@ const { URL } = require('url');
 const fzstd = require('fzstd');
 
 const configLib = require('./config');
-const { endpointKey } = require('./keychain');
+const keychainLib = require('./keychain');
+const { endpointKey } = keychainLib;
 const keysLib = require('./keys');
 
 const HOP_HEADERS = new Set([
@@ -395,6 +396,12 @@ function handleMcp(cfg, req, res, started) {
     headers[name] = value;
   }
   headers.Host = host;
+  // Chained-gateway mode: forward OUR outbound key upstream (e.g. a laptop
+  // instance whose mcpUpstream is another blaze-proxy's public /mcp).
+  if (cfg.mcpUpstreamAuth === 'apiKey') {
+    const outbound = endpointKey(cfg);
+    if (outbound) headers.Authorization = `Bearer ${outbound}`;
+  }
 
   const mod = protocol === 'https:' ? https : http;
   const upstreamReq = mod.request({
@@ -445,11 +452,45 @@ function isLoopback(remoteAddress) {
   return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1';
 }
 
+// Which listener class did a connection arrive on? Classified by the LOCAL
+// (listener-side) address, so it stays correct even with a 0.0.0.0 bind.
+function listenerClass(socket) {
+  return isLoopback(socket.localAddress) ? 'loopback' : 'lan';
+}
+
+function listenerAuthMode(cfg, socket) {
+  return (cfg.listenerAuth || {})[listenerClass(socket)] || 'open';
+}
+
+// Loopback trust for the control API holds ONLY while the loopback listener
+// is 'open'. When an edge tunnel fronts loopback (ngrok → 127.0.0.1), the
+// operator sets listenerAuth.loopback='keys' — and that must ALSO withdraw
+// control trust, or the public edge inherits config-rewrite access.
 function controlAllowed(cfg, remoteAddress, authHeader) {
-  if (isLoopback(remoteAddress)) return true;
+  const loopbackTrusted = ((cfg.listenerAuth || {}).loopback || 'open') === 'open';
+  if (isLoopback(remoteAddress) && loopbackTrusted) return true;
   const token = cfg.controlToken;
   if (!token) return false;
   return authHeader === `Bearer ${token}`;
+}
+
+// Validate a model-path request against the keystore. Returns the key record
+// (request may proceed, header consumed) or null (already responded 401).
+function enforceModelKey(req, res, started) {
+  const auth = req.headers.authorization || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const record = keysLib.validate(bearer);
+  if (!record) {
+    const msg = JSON.stringify({ error: { message: 'missing, unknown, or revoked API key', type: 'unauthorized' } });
+    res.writeHead(401, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(msg), 'WWW-Authenticate': 'Bearer' });
+    res.end(msg);
+    emitEvent({ kind: 'request', route: 'denied', status: 401, ms: Date.now() - started });
+    return null;
+  }
+  // The gateway key must never travel upstream (intercepts attach the
+  // endpoint key themselves; pass-throughs would leak it).
+  delete req.headers.authorization;
+  return record;
 }
 
 function handleControl(state, req, res) {
@@ -476,7 +517,30 @@ function handleControl(state, req, res) {
     return res.end();
   }
   if (url.pathname === '/__blaze/state' && req.method === 'GET') {
-    return json(200, { running: true, version: require('../package.json').version, requestCount, config: state.cfg });
+    // Config is scrubbed of any inline key value; apiKey is a safe descriptor.
+    const safeCfg = { ...state.cfg };
+    if (safeCfg.endpointAuth?.type === 'value') safeCfg.endpointAuth = { type: 'value', value: '(set)' };
+    return json(200, {
+      running: true,
+      version: require('../package.json').version,
+      requestCount,
+      apiKey: keychainLib.describeEndpointKey(state.cfg),
+      config: safeCfg
+    });
+  }
+  if (url.pathname === '/__blaze/apikey' && req.method === 'PUT') {
+    return readBody(req).then((body) => {
+      try {
+        const { key } = JSON.parse(body.toString('utf8'));
+        if (!key || typeof key !== 'string' || key.length < 8) throw new Error('key missing or too short');
+        const where = keychainLib.storeEndpointKey(state.cfg, key.trim());
+        if (where === 'config') configLib.save(state.cfg);
+        emitEvent({ kind: 'config', route: 'apikey-updated' });
+        json(200, { ok: true, stored: where, apiKey: keychainLib.describeEndpointKey(state.cfg) });
+      } catch (err) {
+        json(400, { ok: false, error: err.message });
+      }
+    });
   }
   if (url.pathname === '/__blaze/config' && req.method === 'PUT') {
     return readBody(req).then((body) => {
@@ -543,6 +607,9 @@ function createServer(initialCfg) {
     }
 
     const cfg = state.cfg;
+    if (listenerAuthMode(cfg, req.socket) === 'keys' && !enforceModelKey(req, res, started)) {
+      return;
+    }
     if (!cfg.proxyEnabled) {
       const msg = JSON.stringify({ error: { message: 'blaze-proxy is turned off', type: 'proxy_disabled' } });
       res.writeHead(503, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(msg) });
@@ -582,11 +649,21 @@ function createServer(initialCfg) {
   });
 
   server.on('upgrade', (req, socket, head) => {
-    if ((req.headers.upgrade || '').toLowerCase() === 'websocket') {
-      wsTunnel(state.cfg, req, socket, head);
-    } else {
-      socket.destroy();
+    if ((req.headers.upgrade || '').toLowerCase() !== 'websocket') {
+      return socket.destroy();
     }
+    // A key-gated listener gates WS upgrades too — otherwise the edge could
+    // use us as a free unauthenticated tunnel to the responses upstream.
+    if (listenerAuthMode(state.cfg, socket) === 'keys') {
+      const auth = req.headers.authorization || '';
+      const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+      if (!keysLib.validate(bearer)) {
+        socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        return socket.destroy();
+      }
+      delete req.headers.authorization;
+    }
+    wsTunnel(state.cfg, req, socket, head);
   });
 
   return { server, state };

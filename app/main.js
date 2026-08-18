@@ -58,9 +58,40 @@ async function createWindow() {
   });
 }
 
+// Stop the daemon on quit. Uses the control API rather than killing our child
+// handle, so it also stops a daemon that was already running when we opened
+// (state 'already-running') — the app owns proxy lifetime either way.
+function stopDaemon(port) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      { host: '127.0.0.1', port, path: '/__blaze/shutdown', method: 'POST', timeout: 3000 },
+      (res) => { res.resume(); res.on('end', resolve); }
+    );
+    req.on('error', resolve);
+    req.on('timeout', () => { req.destroy(); resolve(); });
+    req.end();
+  });
+}
+
 app.whenReady().then(createWindow);
+
 app.on('window-all-closed', () => {
-  // The daemon keeps routing when the window closes — the app is a viewer,
-  // not the proxy itself. Quit Electron only.
+  // Proxy lifetime is tied to the app: closing the window stops routing.
   app.quit();
+});
+
+let shuttingDown = false;
+app.on('before-quit', (event) => {
+  if (shuttingDown) return;
+  event.preventDefault();
+  shuttingDown = true;
+  const cfg = configLib.load();
+  const port = Number(process.env.BLAZE_PORT || cfg.port);
+  stopDaemon(port).then(() => {
+    // Belt and braces: if the daemon ignored the shutdown request, kill the
+    // child we spawned. detached:false already ties it to us, but an
+    // already-running daemon has no child handle.
+    if (daemon && !daemon.killed) { try { daemon.kill('SIGTERM'); } catch { /* gone */ } }
+    app.quit();
+  });
 });

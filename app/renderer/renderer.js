@@ -148,10 +148,40 @@ $('routeAll').addEventListener('click', () => {
 });
 
 // ————— settings —————
-$('settingsBtn').addEventListener('click', () => {
+function paintApiKeyHint(desc) {
+  $('apiKeyHint').textContent = desc && desc.set
+    ? `Set · ends ····${desc.last4}. One key authorizes everything — model requests and MCP.`
+    : 'Not set. One key authorizes everything — model requests and MCP.';
+}
+$('settingsBtn').addEventListener('click', async () => {
   $('endpointField').value = config.endpoint;
   $('portField').value = PORT;
+  $('apiKeyField').value = '';
+  try {
+    const state = await fetchState();
+    paintApiKeyHint(state.apiKey);
+  } catch { /* hint keeps last text */ }
   $('settingsOverlay').hidden = false;
+});
+$('apiKeyField').addEventListener('change', async () => {
+  const key = $('apiKeyField').value.trim();
+  if (!key) return;
+  try {
+    const res = await fetch(`${BASE}/__blaze/apikey`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key })
+    });
+    const out = await res.json();
+    if (out.ok) {
+      $('apiKeyField').value = '';
+      paintApiKeyHint(out.apiKey);
+    } else {
+      $('apiKeyHint').textContent = `Could not save: ${out.error}`;
+    }
+  } catch (e) {
+    $('apiKeyHint').textContent = `Could not save: ${e.message}`;
+  }
 });
 $('settingsClose').addEventListener('click', () => { $('settingsOverlay').hidden = true; });
 $('settingsOverlay').addEventListener('click', (e) => { if (e.target === $('settingsOverlay')) $('settingsOverlay').hidden = true; });
