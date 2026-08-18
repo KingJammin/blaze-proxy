@@ -8,7 +8,25 @@ Desktop AI model router. Point your AI tools at `http://127.0.0.1:8789/v1` and B
 - **Desktop UI** — Electron app (Blaze-styled) with live request tail; the proxy itself runs fine headless.
 - **Codex-grade plumbing** — zstd request sniffing, `/v1/models` catalog patching (in-place, schema-safe), WebSocket pass-through tunneling, SSE keep-alive heartbeats while slow local models think, terminal `response.failed` events instead of dead sockets.
 
-> ### Codex: use a custom provider, or routing can't reach you
+> ### Transparent mode (macOS, opt-in, off by default)
+
+Routes the Codex/ChatGPT app through blaze with **no client configuration at all** — no `config.toml` edits, no profile. Blaze becomes the machine's HTTPS proxy for OpenAI hosts, terminates TLS with its own local CA, refuses WebSocket upgrades so Codex falls back to HTTP (`"Falling back from WebSockets to HTTPS transport"`), and routes the decrypted request through the normal engine.
+
+```bash
+blaze-proxy transparent status          # is it on, is the CA valid, are any clients stale?
+blaze-proxy transparent off             # panic button — clears the machine proxy even if the daemon is dead
+blaze-proxy transparent off --remove-ca # ...and delete the CA
+```
+
+Enable it by setting `transparent: { "enabled": true }` in config (a Settings toggle is coming), then **restart client apps once** — `launchctl` environment only reaches processes started afterwards, which is the single most common "why isn't it working" cause. `transparent status` flags clients that predate the change.
+
+**Read before enabling:**
+- **It is machine-global.** `launchctl setenv HTTPS_PROXY` affects every GUI app launched afterwards, not just Codex. Blaze **blind-tunnels every host except `chatgpt.com`/`openai.com`** — those connections are spliced byte-for-byte and never decrypted — but they do transit this process.
+- **Fail-open is built in and tested.** Teardown runs on exit, SIGINT/SIGTERM/SIGHUP/SIGQUIT, and uncaught exceptions; the daemon self-heals a stale environment at startup if a previous run was killed outright. In transparent mode a fatal error deliberately exits (clearing the environment) rather than staying up broken.
+- **The CA private key is a real local secret** — mode 600, generated on your machine, never synced. It is *not* installed into the system keychain and needs no admin password: trust is scoped to processes reading `CODEX_CA_CERTIFICATE`.
+- If OpenAI ever adds certificate pinning, this breaks as a TLS error; `transparent off` restores normality immediately.
+
+### Codex: use a custom provider, or routing can't reach you
 > Routing works by reading the model out of an HTTP request. Under its **native** provider (`model_provider = "openai"`), the Codex CLI talks to models ChatGPT actually serves — `gpt-5.6-terra`, `gpt-5.6-luna` — over a **WebSocket**, which carries its model inside the stream. The proxy can only tunnel those, never redirect them, so toggling such a model has no effect and the request still reaches the provider and still costs money. Measured, not assumed: stripping `use_responses_lite`, `tool_mode`, `multi_agent_version`, and `supported_in_api` from the model card does not move Codex off that path.
 >
 > **The fix is provider-level.** A custom provider with `wire_api = "responses"` has no WebSocket option, so Codex speaks HTTP POST — which the proxy can sniff and intercept, for real model names. Put this in a standalone profile file (current Codex rejects `[profiles.X]` inside `config.toml`):

@@ -101,6 +101,11 @@ const DEFAULTS = {
   //          ALSO withdraws the control API's loopback trust — set
   //          controlToken for on-box management in that case.
   listenerAuth: { loopback: 'open', lan: 'open' },
+  // Transparent interception (macOS): become the machine's HTTPS proxy so
+  // clients need no configuration at all. OFF by default — enabling sets
+  // machine-global env vars for GUI apps, which is the user's call, not a
+  // default. See README "Transparent mode".
+  transparent: { enabled: false, port: 8799 },
   heartbeatSeconds: 12,
   upstreamAttempts: 3,
   upstreamRetryDelaySeconds: 3,

@@ -55,6 +55,43 @@ async function main() {
       }
       break;
     }
+    case 'transparent': {
+      // Works WITHOUT a running daemon on purpose: if transparent mode ever
+      // strands the machine's network, `blaze-proxy transparent off` must fix
+      // it even when nothing else is alive.
+      const t = require('../src/transparent');
+      const sub = process.argv[3] || 'status';
+      if (sub === 'off') {
+        const res = t.disable({ removeCA: process.argv.includes('--remove-ca') });
+        const saved = configLib.load();
+        saved.transparent = { ...(saved.transparent || {}), enabled: false };
+        configLib.save(saved);
+        console.log(`Transparent mode OFF. Environment cleared: ${res.cleared}${res.caRemoved ? ', CA removed' : ''}.`);
+        console.log('Restart client apps so they drop the old proxy environment.');
+      } else if (sub === 'status') {
+        const report = t.doctor(Number(cfg.transparent?.port || 8799));
+        const on = Boolean(cfg.transparent?.enabled);
+        console.log(`transparent mode: ${on ? 'enabled in config' : 'disabled in config'}`);
+        // When it's off, unset variables are the CORRECT state, not failures.
+        for (const c of report.checks) {
+          const label = c.ok ? 'ok  ' : (on ? 'FAIL' : 'off ');
+          console.log(`  ${label}  ${c.name} — ${c.detail}`);
+        }
+        if (!on && report.checks.some((c) => c.ok && /HTTPS_PROXY|CODEX_CA/.test(c.name))) {
+          console.log('  WARN  environment is set while config says disabled — run `blaze-proxy transparent off`');
+        }
+        const stale = t.staleClients(report.marker);
+        if (stale.length) {
+          console.log('  WARN  these clients started BEFORE the environment was set and will ignore it:');
+          for (const s of stale) console.log(`          pid ${s.pid} (${s.started}) ${s.command}`);
+          console.log('        restart them to pick it up.');
+        }
+      } else {
+        console.error('usage: blaze-proxy transparent <status|off [--remove-ca]>');
+        process.exit(1);
+      }
+      break;
+    }
     case 'keys': {
       const keysLib = require('../src/keys');
       const sub = process.argv[3];
@@ -105,7 +142,7 @@ async function main() {
       break;
     }
     default:
-      console.log('usage: blaze-proxy <start|stop|status|app|keys>');
+      console.log('usage: blaze-proxy <start|stop|status|app|keys|transparent>');
       process.exitCode = 1;
   }
 }

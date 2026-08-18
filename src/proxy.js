@@ -15,6 +15,8 @@ const configLib = require('./config');
 const keychainLib = require('./keychain');
 const { endpointKey } = keychainLib;
 const keysLib = require('./keys');
+const transparentLib = require('./transparent');
+const { createMitmServer } = require('./mitm');
 
 const HOP_HEADERS = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -712,8 +714,28 @@ function handleControl(state, req, res) {
     req.on('close', () => tailClients.delete(res));
     return;
   }
+  if (url.pathname === '/__blaze/transparent' && req.method === 'GET') {
+    const port = Number(state.cfg.transparent?.port || 8799);
+    const report = transparentLib.doctor(port);
+    return json(200, {
+      enabled: Boolean(state.cfg.transparent?.enabled),
+      ...report,
+      staleClients: transparentLib.staleClients(report.marker)
+    });
+  }
+  if (url.pathname === '/__blaze/transparent/off' && req.method === 'POST') {
+    // Panic button: clear the machine's proxy environment right now, whatever
+    // the config says. Deliberately available even when nothing looks broken.
+    const result = transparentLib.disable();
+    state.cfg.transparent = { ...(state.cfg.transparent || {}), enabled: false };
+    configLib.save(state.cfg);
+    emitEvent({ kind: 'transparent', route: 'disabled', status: 200 });
+    return json(200, { ok: true, ...result, note: 'restart client apps to drop the old environment' });
+  }
   if (url.pathname === '/__blaze/shutdown' && req.method === 'POST') {
     json(200, { ok: true });
+    // Clear the machine proxy BEFORE exiting, synchronously.
+    if (transparentLib.markerExists()) transparentLib.clearEnv();
     setTimeout(() => process.exit(0), 100);
     return;
   }
@@ -842,12 +864,21 @@ function start() {
   const cfg = configLib.load();
   configLib.save(cfg); // materialize defaults on first run
 
+  // BEFORE anything else: if a previous run died while it was the machine's
+  // proxy, its env vars still point at a dead port. Clear them.
+  transparentLib.selfHealOnStart();
+
   // Last-resort guards: a router that stays up serving errors beats one that
   // exits and drops every connection. Per-request faults are already caught;
   // these cover anything that escapes (upstream socket callbacks, timers).
   process.on('unhandledRejection', (err) => {
     console.error(`blaze-proxy: unhandled rejection (continuing): ${err?.stack || err}`);
   });
+  // NOTE ordering: in transparent mode, src/transparent.js also registers an
+  // uncaughtException handler that clears the machine proxy and EXITS. That
+  // deliberately outranks "keep serving" — a live-but-broken proxy leaves the
+  // machine's HTTPS pointed at something that can't serve it, whereas exiting
+  // with the environment cleared just sends apps direct.
   process.on('uncaughtException', (err) => {
     console.error(`blaze-proxy: uncaught exception (continuing): ${err?.stack || err}`);
   });
@@ -872,6 +903,31 @@ function start() {
   server.listen(port, host, () => {
     console.log(`blaze-proxy listening on http://${host}:${port} (endpoint: ${cfg.endpoint})`);
   });
+
+  // Transparent mode, if the operator turned it on. Teardown hooks are armed
+  // BEFORE the env vars are set, so there is no window where we are the
+  // machine's proxy without a registered way to undo it.
+  let mitm = null;
+  if (cfg.transparent?.enabled) {
+    try {
+      transparentLib.installTeardownHooks();
+      const mitmPort = Number(cfg.transparent.port || 8799);
+      mitm = createMitmServer({ blazePort: port, onEvent: emitEvent });
+      mitm.listen(mitmPort, '127.0.0.1', () => {
+        const info = transparentLib.enable(mitmPort);
+        console.log(`blaze-proxy transparent mode ON — proxy ${info.proxyUrl}, CA ${info.caCert}`);
+        console.log('blaze-proxy: restart client apps once so they pick up the new environment');
+        emitEvent({ kind: 'transparent', route: 'enabled', dest: info.proxyUrl, status: 200 });
+      });
+      mitm.on('error', (err) => {
+        console.error(`blaze-proxy: transparent listener failed (${err.message}) — clearing environment`);
+        transparentLib.disable();
+      });
+    } catch (err) {
+      console.error(`blaze-proxy: could not enable transparent mode (${err.message}) — environment left clean`);
+      transparentLib.disable();
+    }
+  }
 
   // LAN-bound instances also get a loopback listener so local management
   // (CLI, UI, curl from the box itself) never needs the control token.
