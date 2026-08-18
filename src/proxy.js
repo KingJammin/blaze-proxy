@@ -362,6 +362,23 @@ function wsTunnel(cfg, req, socket, head) {
 }
 
 // ————— control API for the UI (/__blaze/*) —————
+
+// Control-plane access: loopback callers are always trusted (the UI); remote
+// callers need the configured controlToken — and with no token configured,
+// remote control is refused outright. This is the bind-split: instances that
+// bind a LAN address (e.g. a fleet router) expose the *proxy* to the network
+// but never an open config-rewrite endpoint.
+function isLoopback(remoteAddress) {
+  return remoteAddress === '127.0.0.1' || remoteAddress === '::1' || remoteAddress === '::ffff:127.0.0.1';
+}
+
+function controlAllowed(cfg, remoteAddress, authHeader) {
+  if (isLoopback(remoteAddress)) return true;
+  const token = cfg.controlToken;
+  if (!token) return false;
+  return authHeader === `Bearer ${token}`;
+}
+
 function handleControl(state, req, res) {
   const url = new URL(req.url, 'http://x');
   const json = (status, value) => {
@@ -369,6 +386,13 @@ function handleControl(state, req, res) {
     res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body), 'Access-Control-Allow-Origin': '*' });
     res.end(body);
   };
+
+  if (url.pathname !== '/healthz' && !controlAllowed(state.cfg, req.socket.remoteAddress, req.headers.authorization || '')) {
+    return json(403, {
+      error: 'control API is loopback-only',
+      hint: 'manage from 127.0.0.1, or set controlToken in config and send Authorization: Bearer <token>'
+    });
+  }
 
   if (req.method === 'OPTIONS') {
     res.writeHead(204, {
@@ -426,6 +450,17 @@ function createServer(initialCfg) {
 
     if (url.pathname.startsWith('/__blaze/') || url.pathname === '/healthz') {
       return handleControl(state, req, res);
+    }
+
+    // Codex's app-server probes this MCP side-channel whenever base_url is
+    // overridden; no upstream serves it and proxying the failure produces
+    // noisy rmcp "fatal worker" log spam in every run. Answer a clean 404.
+    if (url.pathname === '/api/codex/ps/mcp') {
+      const msg = JSON.stringify({ error: { message: 'mcp side-channel not supported by blaze-proxy', type: 'not_found' } });
+      res.writeHead(404, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(msg) });
+      res.end(msg);
+      emitEvent({ kind: 'request', model: null, route: 'stub', dest: 'mcp-side-channel', status: 404, ms: 0 });
+      return;
     }
 
     const cfg = state.cfg;
@@ -487,9 +522,20 @@ function start() {
   server.listen(port, host, () => {
     console.log(`blaze-proxy listening on http://${host}:${port} (endpoint: ${cfg.endpoint})`);
   });
-  return { server, state };
+
+  // LAN-bound instances also get a loopback listener so local management
+  // (CLI, UI, curl from the box itself) never needs the control token.
+  let aux = null;
+  if (host !== '127.0.0.1' && host !== '::1' && host !== 'localhost') {
+    aux = http.createServer(server.listeners('request')[0]);
+    for (const listener of server.listeners('upgrade')) aux.on('upgrade', listener);
+    aux.listen(port, '127.0.0.1', () => {
+      console.log(`blaze-proxy control listener on http://127.0.0.1:${port}`);
+    });
+  }
+  return { server, state, aux };
 }
 
-module.exports = { createServer, start, patchModelCards };
+module.exports = { createServer, start, patchModelCards, controlAllowed };
 
 if (require.main === module) start();

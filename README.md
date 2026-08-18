@@ -85,7 +85,12 @@ One Node daemon (`src/proxy.js`), no framework, one dependency (`fzstd`):
 | `GET /v1/models` | Pass-through + in-place card patches from config |
 | `POST /v1/messages` | Pass-through to api.anthropic.com (translation planned) |
 | `Upgrade: websocket` | Raw TLS byte-splice tunnel to the responses upstream |
-| `/__blaze/*` | Localhost control API: state, config, SSE event tail |
+| `/__blaze/*` | Control API: state, config, SSE event tail |
+| `POST /api/codex/ps/mcp` | Clean 404 stub (Codex app-server probes this side-channel on custom base URLs; proxying the failure spams rmcp logs) |
+
+### Control-plane security
+
+Loopback callers always have control access (that's how the UI talks to the daemon). Remote callers are refused unless `controlToken` is set in config and sent as `Authorization: Bearer <token>` — with no token configured, a LAN-bound instance exposes the *proxy* to the network but never a config-rewrite endpoint. Instances started with a non-loopback `BLAZE_HOST` also get a loopback listener on the same port, so on-box management never needs the token. `/healthz` is always open for probes.
 
 The Electron app is a pure client of `/__blaze/*` — closing the window never stops routing.
 
