@@ -135,3 +135,38 @@ test('the responses path is recognised in both Codex and OpenAI shapes', () => {
   assert.ok(RESPONSES_RE.test('/v1/responses'));
   assert.ok(!RESPONSES_RE.test('/backend-api/codex/models'));
 });
+
+// ————— containerised clients —————
+// An absolute path is not universal: Parall virtualises HOME, so
+// /Users/<me>/.blaze-proxy/ca/blaze-ca.pem resolves INSIDE the container and
+// is missing there. A daemon-side readability check cannot detect this.
+
+test('CA is mirrored into container roots (public cert only, never the key)', () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'blaze-container-'));
+  const parent = path.join(fakeHome, 'Library', 'Application Support', 'Parall');
+  fs.mkdirSync(path.join(parent, 'ChatGPT (Test)'), { recursive: true });
+
+  // Point the module's container scan at the fake home.
+  const original = os.homedir;
+  os.homedir = () => fakeHome;
+  try {
+    delete require.cache[require.resolve('../src/transparent')];
+    const t2 = require('../src/transparent');
+    t2.ensureCA();
+    const results = t2.mirrorCAIntoContainers();
+    assert.ok(results.length >= 1, 'the container should be found');
+    for (const r of results) {
+      assert.strictEqual(r.ok, true, r.error);
+      assert.ok(fs.existsSync(r.target), 'the cert must exist where the container will look');
+      assert.ok(fs.readFileSync(r.target, 'utf8').includes('BEGIN CERTIFICATE'));
+      const keyBeside = path.join(path.dirname(r.target), 'blaze-ca.key');
+      assert.ok(!fs.existsSync(keyBeside), 'the PRIVATE KEY must never be copied into an app container');
+    }
+    // and disabling cleans them up
+    t2.unmirrorCA();
+    for (const r of results) assert.ok(!fs.existsSync(r.target), 'mirrors must be removed on disable');
+  } finally {
+    os.homedir = original;
+    delete require.cache[require.resolve('../src/transparent')];
+  }
+});

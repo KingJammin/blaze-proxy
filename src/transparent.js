@@ -15,6 +15,7 @@
 
 const { execFileSync } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const { CONFIG_DIR } = require('./config');
@@ -115,6 +116,69 @@ function deleteCA() {
   try { fs.rmSync(CA_DIR, { recursive: true, force: true }); return true; } catch { return false; }
 }
 
+// ————— containerised clients —————
+//
+// An absolute path does NOT mean the same thing to every process. Codex running
+// inside a container (Parall virtualises HOME) resolves
+//   /Users/<me>/.blaze-proxy/ca/blaze-ca.pem
+// against its own root, i.e. <container>/.blaze-proxy/ca/blaze-ca.pem, which
+// does not exist — so the CA is unreachable even though it is absolute,
+// tilde-free, and perfectly readable from our namespace. Readability checks run
+// from the daemon cannot see this class of failure at all.
+//
+// Mirroring the CA (public cert only — never the key) into each container root
+// is what makes transparent mode genuinely zero-config for these builds.
+const CONTAINER_PARENTS = [
+  path.join(os.homedir(), 'Library', 'Application Support', 'Parall')
+];
+
+function containerRoots() {
+  const roots = [];
+  for (const parent of CONTAINER_PARENTS) {
+    let entries = [];
+    try { entries = fs.readdirSync(parent, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      roots.push(path.join(parent, entry.name));
+    }
+  }
+  return roots;
+}
+
+// Copy the CA cert to where each containerised client will actually look.
+function mirrorCAIntoContainers() {
+  if (!caExists()) return [];
+  const source = fs.readFileSync(CA_CERT);
+  const results = [];
+  for (const root of containerRoots()) {
+    const target = path.join(root, '.blaze-proxy', 'ca', 'blaze-ca.pem');
+    try {
+      let identical = false;
+      try { identical = fs.readFileSync(target).equals(source); } catch { /* missing */ }
+      if (!identical) {
+        fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o755 });
+        fs.writeFileSync(target, source, { mode: 0o644 }); // public cert, never the key
+      }
+      results.push({ root, target, ok: true, updated: !identical });
+    } catch (err) {
+      results.push({ root, target, ok: false, error: err.message });
+    }
+  }
+  return results;
+}
+
+// Remove the mirrored copies again, so disabling leaves nothing behind.
+function unmirrorCA() {
+  const removed = [];
+  for (const root of containerRoots()) {
+    const dir = path.join(root, '.blaze-proxy');
+    try {
+      if (fs.existsSync(dir)) { fs.rmSync(dir, { recursive: true, force: true }); removed.push(dir); }
+    } catch { /* best effort */ }
+  }
+  return removed;
+}
+
 // Mint (and cache) a leaf certificate for one hostname, signed by our CA.
 const leafCache = new Map();
 function leafFor(hostname) {
@@ -166,13 +230,16 @@ function enable(port) {
   fs.writeFileSync(MARKER, JSON.stringify({
     pid: process.pid, port, enabledAt: new Date().toISOString(), vars: ENV_VARS, caCert: CA_CERT
   }, null, 2) + '\n');
-  return { proxyUrl, caCert: CA_CERT, caCreated: ca.created };
+  // Containerised clients resolve our absolute CA path inside their own root.
+  const mirrored = mirrorCAIntoContainers();
+  return { proxyUrl, caCert: CA_CERT, caCreated: ca.created, mirrored };
 }
 
 function disable({ removeCA = false } = {}) {
   const cleared = clearEnv();
+  const unmirrored = unmirrorCA(); // never leave stray CAs in app containers
   const removed = removeCA ? deleteCA() : false;
-  return { cleared, caRemoved: removed };
+  return { cleared, caRemoved: removed, unmirrored };
 }
 
 // ————— doctor —————
@@ -224,6 +291,22 @@ function doctor(port) {
   // definition, so comparing against process.pid failed on healthy systems,
   // and a doctor that always shows red is a doctor people stop reading.
   const ownerAlive = Boolean(marker) && processAlive(marker.pid);
+  // Containerised clients (Parall) remap our absolute path into their own
+  // root, so a daemon-side readability check cannot see their view at all.
+  const roots = containerRoots();
+  if (roots.length) {
+    const missing = roots.filter((r) => {
+      try { fs.accessSync(path.join(r, '.blaze-proxy', 'ca', 'blaze-ca.pem'), fs.constants.R_OK); return false; }
+      catch { return true; }
+    });
+    checks.push({
+      name: `CA mirrored into ${roots.length} app container(s)`,
+      ok: missing.length === 0,
+      detail: missing.length === 0
+        ? 'all containers have a readable copy'
+        : `MISSING in ${missing.length}: ${missing.map((m) => path.basename(m)).join(', ')} — containerised clients resolve /Users/... inside their own root`
+    });
+  }
   checks.push({
     name: 'marker owned by a live daemon',
     ok: ownerAlive,
@@ -278,5 +361,6 @@ module.exports = {
   CA_DIR, CA_CERT, CA_KEY, MARKER, ENV_VARS,
   ensureCA, caExists, deleteCA, leafFor,
   enable, disable, clearEnv, selfHealOnStart, installTeardownHooks,
-  doctor, staleClients, clientBuilds, markerExists, readMarker
+  doctor, staleClients, clientBuilds, markerExists, readMarker,
+  containerRoots, mirrorCAIntoContainers, unmirrorCA
 };
