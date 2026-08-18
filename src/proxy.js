@@ -258,7 +258,20 @@ function resolveUpstream(cfg, name) {
 }
 
 async function handlePassthrough(cfg, req, res, rawBody, origin, { patchModels = false, model = null, started = Date.now(), attachEndpointKey = false } = {}) {
-  const { protocol, host, port, prefix } = originParts(origin);
+  let protocol, host, port, prefix;
+  try {
+    ({ protocol, host, port, prefix } = originParts(origin));
+  } catch {
+    // A misconfigured upstream must degrade to a 502, never take the daemon
+    // down (an unhandled throw here is fatal to the whole process in Node).
+    const msg = JSON.stringify({
+      error: { message: `blaze-proxy: upstream is not a valid URL: ${JSON.stringify(origin)} — check config.upstreams`, type: 'config_error' }
+    });
+    res.writeHead(502, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(msg) });
+    res.end(msg);
+    emitEvent({ kind: 'request', model, route: 'config-error', status: 502, ms: Date.now() - started, error: `bad upstream: ${origin}` });
+    return;
+  }
   const incoming = new URL(req.url, 'http://x');
   // Map /v1/... onto the upstream's own prefix (chatgpt backend has no /v1).
   let path = incoming.pathname;
@@ -343,6 +356,9 @@ function patchModelCards(cfg, body) {
   const staticPatches = cfg.modelCardPatches || {};
   let data;
   try { data = JSON.parse(body.toString('utf8')); } catch { return body; }
+  // Valid JSON that isn't an object (null, a bare string, a number) has no
+  // cards to patch — hand it back untouched rather than dereferencing it.
+  if (!data || typeof data !== 'object') return body;
 
   const routedIds = new Set();
   for (const provider of cfg.providers || []) {
@@ -615,7 +631,24 @@ function handleControl(state, req, res) {
 function createServer(initialCfg) {
   const state = { cfg: initialCfg };
 
-  const server = http.createServer(async (req, res) => {
+  // Every request runs inside this guard: a throw anywhere in the routing
+  // path becomes a 502 for that one request. Without it an unhandled async
+  // rejection terminates the process and drops ALL traffic (how a single bad
+  // upstream string once crash-looped a deployment).
+  const server = http.createServer((req, res) => {
+    handleRequest(state, req, res).catch((err) => {
+      console.error(`blaze-proxy: unhandled error on ${req.method} ${req.url}: ${err.stack || err.message}`);
+      if (!res.headersSent) {
+        const msg = JSON.stringify({ error: { message: `blaze-proxy internal error: ${err.message}`, type: 'proxy_error' } });
+        res.writeHead(502, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(msg) });
+        res.end(msg);
+      } else {
+        res.destroy();
+      }
+    });
+  });
+
+  async function handleRequest(state, req, res) {
     const started = Date.now();
     const url = new URL(req.url, 'http://x');
 
@@ -685,7 +718,7 @@ function createServer(initialCfg) {
       const up = resolveUpstream(cfg, 'responses');
       return handlePassthrough(cfg, req, res, rawBody, up.origin, { started, attachEndpointKey: up.isEndpoint });
     }
-  });
+  }
 
   server.on('upgrade', (req, socket, head) => {
     if ((req.headers.upgrade || '').toLowerCase() !== 'websocket') {
@@ -711,6 +744,23 @@ function createServer(initialCfg) {
 function start() {
   const cfg = configLib.load();
   configLib.save(cfg); // materialize defaults on first run
+
+  // Last-resort guards: a router that stays up serving errors beats one that
+  // exits and drops every connection. Per-request faults are already caught;
+  // these cover anything that escapes (upstream socket callbacks, timers).
+  process.on('unhandledRejection', (err) => {
+    console.error(`blaze-proxy: unhandled rejection (continuing): ${err?.stack || err}`);
+  });
+  process.on('uncaughtException', (err) => {
+    console.error(`blaze-proxy: uncaught exception (continuing): ${err?.stack || err}`);
+  });
+
+  // Surface config mistakes at startup instead of at first request.
+  for (const [name, value] of Object.entries(cfg.upstreams || {})) {
+    if (value === 'endpoint') continue;
+    try { new URL(value); }
+    catch { console.error(`blaze-proxy: WARNING upstreams.${name} is not a valid URL (${JSON.stringify(value)}) — requests routed there will 502. Use a full URL or the literal "endpoint".`); }
+  }
   const { server, state } = createServer(cfg);
   const host = process.env.BLAZE_HOST || '127.0.0.1';
   const port = Number(process.env.BLAZE_PORT || cfg.port);
