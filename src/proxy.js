@@ -97,6 +97,29 @@ function requestUpstream(options, body) {
 
 // Ported from server.py's request scrubbing: strip reasoning summaries the
 // local model can't accept, and drop/rehydrate compaction items.
+// Is this a message-shaped item carrying no actual text? Codex emits e.g.
+// {role:'developer', content:''} when driving a custom provider, and strict
+// servers (vLLM) reject it with a 500. Tool calls legitimately have no
+// content, so only items that HAVE a content field are considered.
+function isEmptyMessageItem(item) {
+  if (!item || typeof item !== 'object') return false;
+  if (!('content' in item)) return false;
+  if (item.type && item.type !== 'message') return false;
+  const content = item.content;
+  if (content === '' || content == null) return true;
+  if (Array.isArray(content)) {
+    if (content.length === 0) return true;
+    return content.every((part) => {
+      if (typeof part === 'string') return part.trim() === '';
+      if (!part || typeof part !== 'object') return false;
+      const text = part.text ?? part.content;
+      return typeof text === 'string' ? text.trim() === '' : false;
+    });
+  }
+  if (typeof content === 'string') return content.trim() === '';
+  return false;
+}
+
 function scrubForEndpoint(payload, destModel) {
   const out = { ...payload, model: destModel };
   if (out.reasoning && typeof out.reasoning === 'object') {
@@ -120,8 +143,18 @@ function scrubForEndpoint(payload, destModel) {
         return [];
       }
       if (type.toLowerCase().includes('compaction')) return [];
+      if (isEmptyMessageItem(item)) return [];
       return [item];
     });
+  }
+  return out;
+}
+
+// Chat Completions shape: same empty-message hazard in `messages`.
+function scrubChatForEndpoint(payload, destModel) {
+  const out = { ...payload, model: destModel };
+  if (Array.isArray(out.messages)) {
+    out.messages = out.messages.filter((m) => !isEmptyMessageItem(m));
   }
   return out;
 }
@@ -174,7 +207,9 @@ function writeStreamError(res, message) {
 async function handleIntercept(cfg, req, res, payload, rule, apiPath, started) {
   const destModel = configLib.destFor(cfg, payload.model);
   const requestedModel = payload.model;
-  const scrubbed = apiPath === '/responses' ? scrubForEndpoint(payload, destModel) : { ...payload, model: destModel };
+  const scrubbed = apiPath === '/responses'
+    ? scrubForEndpoint(payload, destModel)
+    : scrubChatForEndpoint(payload, destModel);
   const wantsStream = Boolean(payload.stream);
   const endpointUrl = cfg.endpoint.replace(/\/$/, '') + apiPath;
   const bodyJson = JSON.stringify(scrubbed);
@@ -227,10 +262,28 @@ async function handleIntercept(cfg, req, res, payload, rule, apiPath, started) {
       return;
     }
     clearInterval(heartbeat);
-    upstream.on('data', (chunk) => { try { res.write(chunk); } catch { upstream.destroy(); } });
+    // The status line was already sent, so an error arriving INSIDE the stream
+    // (vLLM emits 500-ish payloads with 200 headers) would otherwise be logged
+    // as a success. Watch the frames and report what the client actually got.
+    let streamError = null;
+    upstream.on('data', (chunk) => {
+      if (!streamError) {
+        const text = chunk.toString('utf8');
+        if (/"type"\s*:\s*"error"|event:\s*(response\.failed|error)|"object"\s*:\s*"error"/.test(text)) {
+          const m = text.match(/"message"\s*:\s*"([^"]{0,200})/);
+          streamError = m ? m[1] : 'error event in stream';
+        }
+      }
+      try { res.write(chunk); } catch { upstream.destroy(); }
+    });
     upstream.on('end', () => {
       res.end();
-      emitEvent({ kind: 'request', model: requestedModel, route: 'intercepted', dest: destModel, status: 200, ms: Date.now() - started });
+      emitEvent({
+        kind: 'request', model: requestedModel, route: 'intercepted', dest: destModel,
+        status: streamError ? 502 : 200,
+        ms: Date.now() - started,
+        error: streamError || undefined
+      });
     });
     upstream.on('error', (err) => {
       writeStreamError(res, `stream interrupted: ${err.message}`);
@@ -799,6 +852,6 @@ function start() {
   return { server, state, aux };
 }
 
-module.exports = { createServer, start, patchModelCards, controlAllowed };
+module.exports = { createServer, start, patchModelCards, controlAllowed, scrubForEndpoint, scrubChatForEndpoint, isEmptyMessageItem };
 
 if (require.main === module) start();
