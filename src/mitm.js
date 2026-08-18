@@ -84,9 +84,17 @@ function createMitmServer({ blazePort, onEvent }) {
   });
 
   // Refusing here is what makes transparent interception work at all.
+  //
+  // 426 specifically, measured across rejection codes against the real client:
+  //   426 → 1 upgrade attempt, immediate downgrade, NO user-visible warning
+  //   501 → 7 attempts, downgrade, prints "Falling back from WebSockets…"
+  //   403/404 → 7 attempts, downgrade, also prints a warning
+  //   400 → client gives up entirely; the request FAILS
+  // It is also the semantically honest answer: we are telling the client to
+  // use a different protocol, not claiming the endpoint is unimplemented.
   inner.on('upgrade', (req, socket) => {
-    emit({ kind: 'mitm', route: 'ws-refused', dest: req.headers.host || '?', status: 501, ms: 0 });
-    socket.write('HTTP/1.1 501 Not Implemented\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    emit({ kind: 'mitm', route: 'ws-refused', dest: req.headers.host || '?', status: 426, ms: 0 });
+    socket.write('HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
     socket.destroy();
   });
   inner.on('clientError', (err, socket) => { try { socket.destroy(); } catch { /* gone */ } });

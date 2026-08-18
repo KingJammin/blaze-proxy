@@ -148,6 +148,13 @@ function leafFor(hostname) {
 function enable(port) {
   if (process.platform !== 'darwin') throw new Error('transparent mode currently supports macOS only');
   const ca = ensureCA();
+  // The CA path is consumed by client apps whose HOME is NOT ours — sandboxed
+  // and translocated ChatGPT builds resolve a relative or ~-prefixed path
+  // against their own container and fail with "No such file or directory".
+  // Absolute, literal, no tilde: assert rather than assume.
+  if (!path.isAbsolute(CA_CERT) || CA_CERT.includes('~')) {
+    throw new Error(`refusing to publish a non-absolute CA path: ${CA_CERT}`);
+  }
   installTeardownHooks();
   const proxyUrl = `http://127.0.0.1:${port}`;
   launchctl(['setenv', 'HTTPS_PROXY', proxyUrl]);
@@ -188,8 +195,20 @@ function doctor(port) {
     detail: httpsProxy || '(unset)'
   });
   const caEnv = envValue('CODEX_CA_CERTIFICATE');
-  checks.push({ name: 'CODEX_CA_CERTIFICATE set', ok: Boolean(caEnv), detail: caEnv || '(unset)' });
-  checks.push({ name: 'CA files present', ok: caExists(), detail: caExists() ? CA_CERT : 'not generated' });
+  checks.push({
+    name: 'CODEX_CA_CERTIFICATE set to an absolute path',
+    ok: Boolean(caEnv) && path.isAbsolute(caEnv) && !caEnv.includes('~'),
+    detail: caEnv || '(unset)'
+  });
+  // Existence is not enough: client apps run as other bundles/sandboxes and
+  // must be able to READ it. A CA that only our process can open still fails.
+  let caReadable = false;
+  try { fs.accessSync(caEnv || CA_CERT, fs.constants.R_OK); caReadable = true; } catch { /* not readable */ }
+  checks.push({
+    name: 'CA file exists and is readable',
+    ok: caExists() && caReadable,
+    detail: caExists() ? (caReadable ? CA_CERT : `${CA_CERT} — NOT READABLE`) : 'not generated'
+  });
 
   let caExpiry = null;
   if (caExists()) {
@@ -218,6 +237,26 @@ function doctor(port) {
 // Was a client process started BEFORE the env was set? launchctl env only
 // reaches processes launched afterwards, and this staleness has caused real
 // confusion (an 18-hour-old Codex ignoring current settings).
+// launchctl env is machine-global, so EVERY ChatGPT/Codex build on the box
+// points here — including sandboxed or translocated copies with a different
+// HOME and different auth. Naming them turns a confusing failure ("No such
+// file or directory" against someone else's container) into an obvious one.
+function clientBuilds() {
+  const builds = [];
+  try {
+    const ps = execFileSync('/bin/ps', ['-Ao', 'pid,comm'], { encoding: 'utf8', timeout: 5000 });
+    for (const line of ps.split('\n')) {
+      const m = line.trim().match(/^(\d+)\s+(.*(?:ChatGPT|codex).*)$/i);
+      if (!m) continue;
+      if (/blaze/i.test(m[2])) continue;
+      // Group by app bundle so N helper processes don't look like N installs.
+      const bundle = (m[2].match(/^(.*?\.app)\//) || [null, m[2]])[1];
+      if (!builds.some((b) => b.bundle === bundle)) builds.push({ pid: Number(m[1]), bundle });
+    }
+  } catch { /* ps unavailable */ }
+  return builds;
+}
+
 function staleClients(marker) {
   if (!marker?.enabledAt) return [];
   const since = new Date(marker.enabledAt).getTime();
@@ -239,5 +278,5 @@ module.exports = {
   CA_DIR, CA_CERT, CA_KEY, MARKER, ENV_VARS,
   ensureCA, caExists, deleteCA, leafFor,
   enable, disable, clearEnv, selfHealOnStart, installTeardownHooks,
-  doctor, staleClients, markerExists, readMarker
+  doctor, staleClients, clientBuilds, markerExists, readMarker
 };

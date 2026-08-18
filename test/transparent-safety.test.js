@@ -120,6 +120,16 @@ test('only OpenAI hosts are decrypted; everything else is blind-tunneled', () =>
   }
 });
 
+test('the WS refusal uses 426, the only code that downgrades silently', () => {
+  // Measured against the real client: 426 → one attempt, silent fallback;
+  // 501/403/404 → seven attempts plus a user-visible warning; 400 → the
+  // client gives up and the request fails outright.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'mitm.js'), 'utf8');
+  assert.match(src, /HTTP\/1\.1 426 Upgrade Required/, 'WS refusal must be 426');
+  assert.ok(!/HTTP\/1\.1 (501|400|403|404)[^\n]*\r\\n/.test(src.replace(/\/\/.*$/gm, '')),
+    'no other rejection code should be written on the upgrade path');
+});
+
 test('the responses path is recognised in both Codex and OpenAI shapes', () => {
   assert.ok(RESPONSES_RE.test('/backend-api/codex/responses'));
   assert.ok(RESPONSES_RE.test('/v1/responses'));

@@ -1,6 +1,6 @@
 {
   "name": "blaze-proxy",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Blaze Proxy — desktop AI model router: intercept model requests and serve them from your own endpoint",
   "license": "MIT",
   "repository": "github:KingJammin/blaze-proxy",

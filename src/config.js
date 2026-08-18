@@ -106,6 +106,10 @@ const DEFAULTS = {
   // machine-global env vars for GUI apps, which is the user's call, not a
   // default. See README "Transparent mode".
   transparent: { enabled: false, port: 8799 },
+  // Debug aid: write the request body of FAILING intercepted requests to
+  // ~/.blaze-proxy/failed-requests. Off by default — these files contain
+  // conversation content. Turn on only to chase an upstream payload bug.
+  captureFailures: false,
   heartbeatSeconds: 12,
   upstreamAttempts: 3,
   upstreamRetryDelaySeconds: 3,

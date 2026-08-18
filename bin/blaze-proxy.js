@@ -80,6 +80,12 @@ async function main() {
         if (!on && report.checks.some((c) => c.ok && /HTTPS_PROXY|CODEX_CA/.test(c.name))) {
           console.log('  WARN  environment is set while config says disabled — run `blaze-proxy transparent off`');
         }
+        const builds = t.clientBuilds();
+        if (builds.length > 1) {
+          console.log(`  WARN  ${builds.length} client builds are running; machine-global env points them ALL here,`);
+          console.log('        and sandboxed/translocated copies resolve paths against their own HOME:');
+          for (const b of builds) console.log(`          pid ${b.pid} ${b.bundle}`);
+        }
         const stale = t.staleClients(report.marker);
         if (stale.length) {
           console.log('  WARN  these clients started BEFORE the environment was set and will ignore it:');

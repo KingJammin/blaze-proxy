@@ -17,6 +17,7 @@ const { endpointKey } = keychainLib;
 const keysLib = require('./keys');
 const transparentLib = require('./transparent');
 const { createMitmServer } = require('./mitm');
+const captureLib = require('./capture');
 
 const HOP_HEADERS = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -246,7 +247,14 @@ async function handleIntercept(cfg, req, res, payload, rule, apiPath, started) {
         'x-blaze-dest': destModel
       });
       res.end(body);
-      emitEvent({ kind: 'request', model: requestedModel, route: 'intercepted', dest: destModel, status: upstream.statusCode, ms: Date.now() - started });
+      let captured = null;
+      if (upstream.statusCode >= 400) {
+        captured = captureLib.record(cfg, {
+          model: requestedModel, dest: destModel, status: upstream.statusCode,
+          requestBody: bodyJson, responseBody: body, note: 'non-streaming intercept failed'
+        });
+      }
+      emitEvent({ kind: 'request', model: requestedModel, route: 'intercepted', dest: destModel, status: upstream.statusCode, ms: Date.now() - started, captured: captured || undefined });
     } catch (err) {
       const msg = JSON.stringify({ error: { message: `blaze-proxy endpoint failure: ${err.message}`, type: 'upstream_error' } });
       res.writeHead(502, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(msg) });
@@ -276,8 +284,13 @@ async function handleIntercept(cfg, req, res, payload, rule, apiPath, started) {
       const chunks = [];
       for await (const c of upstream) chunks.push(c);
       clearInterval(heartbeat);
-      writeStreamError(res, `endpoint returned HTTP ${upstream.statusCode}: ${Buffer.concat(chunks).toString('utf8').slice(0, 500)}`);
-      emitEvent({ kind: 'request', model: requestedModel, route: 'intercepted', dest: destModel, status: upstream.statusCode, ms: Date.now() - started });
+      const errBody = Buffer.concat(chunks);
+      writeStreamError(res, `endpoint returned HTTP ${upstream.statusCode}: ${errBody.toString('utf8').slice(0, 500)}`);
+      const captured = captureLib.record(cfg, {
+        model: requestedModel, dest: destModel, status: upstream.statusCode,
+        requestBody: bodyJson, responseBody: errBody, note: 'streaming intercept rejected before any frames'
+      });
+      emitEvent({ kind: 'request', model: requestedModel, route: 'intercepted', dest: destModel, status: upstream.statusCode, ms: Date.now() - started, captured: captured || undefined });
       return;
     }
     clearInterval(heartbeat);
@@ -867,6 +880,7 @@ function start() {
   // BEFORE anything else: if a previous run died while it was the machine's
   // proxy, its env vars still point at a dead port. Clear them.
   transparentLib.selfHealOnStart();
+  captureLib.announceOnce(cfg); // loud, because it records conversation content
 
   // Last-resort guards: a router that stays up serving errors beats one that
   // exits and drops every connection. Per-request faults are already caught;
