@@ -58,6 +58,10 @@
   .stat span { font-size: 11px; color: var(--muted); }
   body.off .stat b { color: var(--dim); }
 
+  /* Proxy off → everything below the master strip reads as disabled. */
+  .zone.dimmable { transition: opacity 0.2s; }
+  body.off .zone.dimmable { opacity: 0.5; pointer-events: none; }
+
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; overflow: hidden; }
   .card-top { display: flex; align-items: center; gap: 14px; padding: 14px 18px; background: var(--panel-2); }
   .card-top .ct-copy { flex: 1; min-width: 0; }
@@ -155,7 +159,7 @@
       </div>
     </section>
 
-    <section class="zone">
+    <section class="zone dimmable">
       <p class="eyebrow">Model routing</p>
       <div class="card">
         <div class="card-top">
@@ -169,7 +173,7 @@
       <div class="grid-providers" id="providers"></div>
     </section>
 
-    <section class="zone">
+    <section class="zone dimmable">
       <p class="eyebrow">Live activity</p>
       <div class="card">
         <div class="log" id="log"><div class="empty" id="logEmpty">Waiting for traffic…</div></div>
