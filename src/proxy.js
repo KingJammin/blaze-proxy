@@ -263,6 +263,18 @@ async function handlePassthrough(cfg, req, res, rawBody, origin, { patchModels =
   headers.Host = host;
   if (rawBody.length) headers['Content-Length'] = rawBody.length;
 
+  // Pass-throughs bound for the ENDPOINT itself (e.g. /v1/models on an
+  // instance whose upstream is the local vLLM) need the endpoint key —
+  // the caller's gateway key was stripped at the listener, and vLLM 401s
+  // otherwise. Never overrides auth the client legitimately sent.
+  try {
+    const ep = originParts(cfg.endpoint);
+    if (host === ep.host && port === ep.port && !headers.Authorization && !headers.authorization) {
+      const outbound = endpointKey(cfg);
+      if (outbound) headers.Authorization = `Bearer ${outbound}`;
+    }
+  } catch { /* unparsable endpoint — nothing to attach */ }
+
   try {
     const upstream = await requestUpstream({ protocol, host, port, path, method: req.method, headers, timeout: 900000 }, rawBody.length ? rawBody : null);
 

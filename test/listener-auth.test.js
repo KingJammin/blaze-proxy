@@ -27,12 +27,16 @@ before(async () => {
   });
   await new Promise((r) => mockEndpoint.listen(0, '127.0.0.1', r));
 
+  const base = configLib.load();
+  const mockOrigin = `http://127.0.0.1:${mockEndpoint.address().port}`;
   const cfg = {
-    ...configLib.load(),
+    ...base,
     proxyEnabled: true,
     routeAll: true,
-    endpoint: `http://127.0.0.1:${mockEndpoint.address().port}/v1`,
+    endpoint: `${mockOrigin}/v1`,
     endpointAuth: { type: 'value', value: 'endpoint-secret' },
+    // Catalog upstream = the endpoint itself (ben1's shape).
+    upstreams: { ...base.upstreams, responses: `${mockOrigin}/v1` },
     listenerAuth: { loopback: 'keys', lan: 'open' },
     controlToken: 'ctl-token'
   };
@@ -118,6 +122,19 @@ test('controlAllowed pure function: loopback trust follows listenerAuth.loopback
   assert.strictEqual(controlAllowed(keyed, '127.0.0.1', ''), false);
   assert.strictEqual(controlAllowed(keyed, '127.0.0.1', 'Bearer t'), true);
   assert.strictEqual(controlAllowed({}, '127.0.0.1', ''), true, 'absent listenerAuth = legacy loopback trust');
+});
+
+test('endpoint-bound pass-through (e.g. /v1/models) attaches the endpoint key', async () => {
+  // The defect: catalog fetches pass through with the caller's gateway key
+  // stripped and nothing attached — vLLM 401s. Endpoint-bound pass-throughs
+  // must carry the endpoint bearer; foreign-bound ones must not.
+  const res = await request('/v1/models', {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${plaintext}` }
+  });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(JSON.parse(res.body).upstreamAuth, 'Bearer endpoint-secret',
+    'catalog fetch must reach the endpoint WITH the endpoint key, not keyless');
 });
 
 test('apikey endpoint stores outbound key (config fallback) and reports masked descriptor', async () => {

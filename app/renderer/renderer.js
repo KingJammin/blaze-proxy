@@ -148,24 +148,57 @@ $('routeAll').addEventListener('click', () => {
 });
 
 // ————— settings —————
-function paintApiKeyHint(desc) {
-  $('apiKeyHint').textContent = desc && desc.set
-    ? `Set · ends ····${desc.last4}. One key authorizes everything — model requests and MCP.`
-    : 'Not set. One key authorizes everything — model requests and MCP.';
+// API key: explicit Save, masked saved-state shown on open, visible feedback.
+let savedKeyMask = '';
+function paintApiKey(desc) {
+  const field = $('apiKeyField');
+  const save = $('apiKeySave');
+  if (desc && desc.set) {
+    savedKeyMask = '••••••••••••••••' + desc.last4;
+    field.value = savedKeyMask;
+    $('apiKeyHint').textContent = `Saved · ends ····${desc.last4}. One key authorizes everything — model requests and MCP.`;
+  } else {
+    savedKeyMask = '';
+    field.value = '';
+    $('apiKeyHint').textContent = 'Not set. One key authorizes everything — model requests and MCP.';
+  }
+  save.disabled = true;
+  save.textContent = 'Save';
+  save.classList.remove('saved');
 }
 $('settingsBtn').addEventListener('click', async () => {
   $('endpointField').value = config.endpoint;
   $('portField').value = PORT;
-  $('apiKeyField').value = '';
   try {
     const state = await fetchState();
-    paintApiKeyHint(state.apiKey);
-  } catch { /* hint keeps last text */ }
+    paintApiKey(state.apiKey);
+  } catch {
+    paintApiKey(null);
+  }
   $('settingsOverlay').hidden = false;
 });
-$('apiKeyField').addEventListener('change', async () => {
+$('apiKeyField').addEventListener('focus', () => {
+  // Clear the mask so a paste replaces it cleanly; blur restores if untouched.
+  if ($('apiKeyField').value === savedKeyMask) $('apiKeyField').value = '';
+});
+$('apiKeyField').addEventListener('blur', () => {
+  if (!$('apiKeyField').value && savedKeyMask) {
+    $('apiKeyField').value = savedKeyMask;
+    $('apiKeySave').disabled = true;
+  }
+});
+$('apiKeyField').addEventListener('input', () => {
+  const v = $('apiKeyField').value.trim();
+  $('apiKeySave').disabled = !v || v === savedKeyMask;
+  $('apiKeySave').textContent = 'Save';
+  $('apiKeySave').classList.remove('saved');
+});
+$('apiKeySave').addEventListener('click', async () => {
   const key = $('apiKeyField').value.trim();
-  if (!key) return;
+  if (!key || key === savedKeyMask) return;
+  const save = $('apiKeySave');
+  save.disabled = true;
+  save.textContent = 'Saving…';
   try {
     const res = await fetch(`${BASE}/__blaze/apikey`, {
       method: 'PUT',
@@ -174,12 +207,18 @@ $('apiKeyField').addEventListener('change', async () => {
     });
     const out = await res.json();
     if (out.ok) {
-      $('apiKeyField').value = '';
-      paintApiKeyHint(out.apiKey);
+      paintApiKey(out.apiKey);
+      save.textContent = 'Saved ✓';
+      save.classList.add('saved');
+      setTimeout(() => { save.textContent = 'Save'; save.classList.remove('saved'); }, 2500);
     } else {
+      save.disabled = false;
+      save.textContent = 'Save';
       $('apiKeyHint').textContent = `Could not save: ${out.error}`;
     }
   } catch (e) {
+    save.disabled = false;
+    save.textContent = 'Save';
     $('apiKeyHint').textContent = `Could not save: ${e.message}`;
   }
 });

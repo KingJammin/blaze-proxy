@@ -128,6 +128,12 @@
   .modal-smart p { margin: 2px 0 0; font-size: 11.5px; color: var(--muted); line-height: 1.5; }
   .field { width: 100%; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text); background: var(--raised); border: 1px solid var(--line-strong); border-radius: 9px; padding: 7px 11px; }
   .field:focus { outline: none; border-color: var(--orange-line); }
+  .keyrow { display: flex; gap: 8px; }
+  .keyrow .field { flex: 1; min-width: 0; }
+  .btn { font: inherit; font-size: 12px; font-weight: 600; color: var(--text); background: var(--raised); border: 1px solid var(--line-strong); border-radius: 9px; padding: 6px 14px; cursor: pointer; flex: none; }
+  .btn.primary { color: var(--orange); border-color: var(--orange-line); background: var(--orange-soft); }
+  .btn:disabled { opacity: 0.4; cursor: default; }
+  .btn.saved { color: var(--good); border-color: rgba(52,211,153,0.45); background: rgba(52,211,153,0.08); }
   .settings-sep { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 </style>
 </head>
@@ -206,7 +212,10 @@
       <div class="modal-head"><h3>Settings</h3><button class="x" id="settingsClose" aria-label="Close">✕</button></div>
       <div class="modal-body">
         <p class="field-label">API key</p>
-        <input class="field" id="apiKeyField" type="password" placeholder="bzp_…" spellcheck="false" autocomplete="off" aria-label="API key">
+        <div class="keyrow">
+          <input class="field" id="apiKeyField" type="password" placeholder="bzp_…" spellcheck="false" autocomplete="off" aria-label="API key">
+          <button class="btn primary" id="apiKeySave" disabled>Save</button>
+        </div>
         <div class="dest-hint" id="apiKeyHint">Not set. One key authorizes everything — model requests and MCP.</div>
         <hr class="settings-sep">
         <p class="field-label">Endpoint</p>
