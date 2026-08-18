@@ -1,0 +1,11 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- macOS squircle-ish rounded square, Blaze dark ground -->
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="#101010"/>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="none" stroke="rgba(255,255,255,0.10)" stroke-width="8"/>
+  <!-- Blaze flame, brand orange, centered -->
+  <svg x="294" y="212" width="436" height="600" viewBox="120 90 160 220">
+    <g transform="translate(0 400) scale(0.1 -0.1)" fill="#f97316">
+      <path d="M1892 3003c-23-20-529-827-572-913-168-334-58-750 255-963 408-278 983-83 1140 386 70 212 46 440-67 632-52 87-173 208-258 257-98 57-106 52-234-156-112-181-112-200-2-297 139-122 123-328-31-412-175-94-373 22-373 218 0 37 8 75 19 100 10 22 107 182 216 355 229 366 228 364 219 393-14 46-198 383-218 399-27 23-68 23-94 1z"/>
+    </g>
+  </svg>
+</svg>
