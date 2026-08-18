@@ -36,6 +36,11 @@ let requestCount = 0;
 // Recording them lets the UI offer the toggle instead.
 const unmanaged = new Map(); // model id → { count, lastSeen }
 
+// WebSocket tunnels are opaque: their model lives inside the stream, so they
+// can never appear in `unmanaged`. An empty unmanaged list therefore proves
+// nothing about tunneled traffic — these counters are the honest diagnostic.
+const wsStats = { tunnels: 0, bypass: 0, lastAt: null };
+
 function noteUnmanaged(cfg, modelId) {
   if (!modelId || configLib.ruleFor(cfg, modelId)) return;
   const prev = unmanaged.get(modelId);
@@ -482,6 +487,9 @@ function wsTunnel(cfg, req, socket, head) {
     // rules cannot apply to it. If ANY model is routed, say so plainly: this
     // conversation reached the provider despite the toggle.
     const anyRouted = cfg.routeAll || (cfg.providers || []).some((p) => (p.models || []).some((m) => m.route));
+    wsStats.tunnels++;
+    if (anyRouted) wsStats.bypass++;
+    wsStats.lastAt = new Date().toISOString();
     emitEvent({
       kind: 'ws',
       route: anyRouted ? 'tunnel-bypass' : 'tunnel',
@@ -658,7 +666,11 @@ function handleControl(state, req, res) {
       version: require('../package.json').version,
       requestCount,
       apiKey: keychainLib.describeEndpointKey(state.cfg),
+      // NOTE: `unmanaged` only sees models parsed out of HTTP requests.
+      // WebSocket conversations are opaque, so consult `ws` for those —
+      // ws.bypass > 0 means traffic left via a tunnel while rules were active.
       unmanaged: [...unmanaged.entries()].map(([id, v]) => ({ id, ...v })),
+      ws: { ...wsStats },
       config: safeCfg
     });
   }
