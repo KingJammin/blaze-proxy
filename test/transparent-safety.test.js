@@ -170,3 +170,71 @@ test('CA is mirrored into container roots (public cert only, never the key)', ()
     delete require.cache[require.resolve('../src/transparent')];
   }
 });
+
+// ————— configs that bypass transparent mode —————
+// A client pointed at blaze's own port with the NATIVE provider opens a
+// WebSocket to the main listener, which can only tunnel it — so traffic
+// reaches the provider while transparent mode reports healthy. Containerised
+// builds read <container>/.codex/config.toml, so one machine had FOUR configs
+// and only the first was ever edited.
+
+test('a config with openai_base_url pointing at blaze is flagged', () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'blaze-shadow-'));
+  fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'),
+    'model = "gpt-5.6-luna"\nmodel_provider = "openai"\nopenai_base_url = "http://127.0.0.1:8789/v1"\n');
+  // and a container config, the one people forget
+  const container = path.join(fakeHome, 'Library', 'Application Support', 'Parall', 'ChatGPT (X)', '.codex');
+  fs.mkdirSync(container, { recursive: true });
+  fs.writeFileSync(path.join(container, 'config.toml'), 'openai_base_url = "http://localhost:8789/v1"\n');
+
+  const original = os.homedir;
+  os.homedir = () => fakeHome;
+  try {
+    delete require.cache[require.resolve('../src/transparent')];
+    const t2 = require('../src/transparent');
+    const hits = t2.shadowingConfigs(8789);
+    assert.strictEqual(hits.length, 2, 'both the home config AND the container config must be found');
+    assert.ok(hits.every((h) => h.severity === 'bypass'));
+    assert.ok(hits.some((h) => h.file.includes('Parall')), 'the container config is the one people miss');
+  } finally {
+    os.homedir = original;
+    delete require.cache[require.resolve('../src/transparent')];
+  }
+});
+
+test('a custom-provider config pointing at blaze is NOT flagged', () => {
+  // wire_api="responses" has no WebSocket path, so it routes correctly —
+  // flagging it would train people to ignore the warning.
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'blaze-shadow2-'));
+  fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.codex', 'blaze.config.toml'),
+    'model_provider = "blaze_local"\n[model_providers.blaze_local]\nbase_url = "http://127.0.0.1:8789/v1"\nwire_api = "responses"\n');
+  const original = os.homedir;
+  os.homedir = () => fakeHome;
+  try {
+    delete require.cache[require.resolve('../src/transparent')];
+    const t2 = require('../src/transparent');
+    assert.strictEqual(t2.shadowingConfigs(8789).length, 0);
+  } finally {
+    os.homedir = original;
+    delete require.cache[require.resolve('../src/transparent')];
+  }
+});
+
+test('commented-out settings are ignored', () => {
+  const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'blaze-shadow3-'));
+  fs.mkdirSync(path.join(fakeHome, '.codex'), { recursive: true });
+  fs.writeFileSync(path.join(fakeHome, '.codex', 'config.toml'),
+    '# openai_base_url = "http://127.0.0.1:8789/v1"\nmodel = "x"\n');
+  const original = os.homedir;
+  os.homedir = () => fakeHome;
+  try {
+    delete require.cache[require.resolve('../src/transparent')];
+    const t2 = require('../src/transparent');
+    assert.strictEqual(t2.shadowingConfigs(8789).length, 0);
+  } finally {
+    os.homedir = original;
+    delete require.cache[require.resolve('../src/transparent')];
+  }
+});

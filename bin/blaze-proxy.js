@@ -80,6 +80,17 @@ async function main() {
         if (!on && report.checks.some((c) => c.ok && /HTTPS_PROXY|CODEX_CA/.test(c.name))) {
           console.log('  WARN  environment is set while config says disabled — run `blaze-proxy transparent off`');
         }
+        // A client pointed at blaze directly bypasses transparent mode entirely.
+        const shadowing = t.shadowingConfigs(Number(cfg.port || 8789));
+        if (shadowing.length) {
+          console.log('  FAIL  client configs BYPASS transparent interception by talking to blaze directly:');
+          for (const h of shadowing) console.log(`          ${h.file}\n            ${h.line}`);
+          console.log('        These use the native provider, so their WebSocket upgrades are TUNNELLED to the');
+          console.log('        provider, not routed — conversations reach OpenAI while this doctor reads healthy.');
+          console.log('        Remove openai_base_url from each file above, then restart that client.');
+        } else {
+          console.log(`  ok    no client config points directly at blaze (checked ${t.codexConfigPaths().length} codex config files)`);
+        }
         const builds = t.clientBuilds();
         if (builds.length > 1) {
           console.log(`  WARN  ${builds.length} client builds are running. Machine-global env points them ALL here, and`);

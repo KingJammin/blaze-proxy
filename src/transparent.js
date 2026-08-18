@@ -179,6 +179,52 @@ function unmirrorCA() {
   return removed;
 }
 
+
+// ————— clients that bypass transparent mode by talking to blaze directly —————
+//
+// A client configured with the NATIVE provider pointed at blaze's own port
+// (openai_base_url = http://127.0.0.1:<blaze>) opens a WebSocket straight to
+// the main listener, where it can only be tunnelled — so every conversation
+// reaches the provider while transparent mode reports perfectly healthy,
+// because transparent mode IS healthy; it is being bypassed upstream of
+// itself. This cost hours once and looks identical to a CA fault, a stale
+// process, or a routing mistake, so the tooling should name it.
+//
+// Containerised builds read <container>/.codex/config.toml, NOT ~/.codex —
+// there were four config files on one machine and only the first was edited.
+function codexConfigPaths() {
+  const paths = [];
+  const home = os.homedir();
+  const add = (dir) => {
+    let entries = [];
+    try { entries = fs.readdirSync(dir); } catch { return; }
+    for (const name of entries) {
+      if (name === 'config.toml' || name.endsWith('.config.toml')) paths.push(path.join(dir, name));
+    }
+  };
+  add(path.join(home, '.codex'));
+  for (const root of containerRoots()) add(path.join(root, '.codex'));
+  return paths;
+}
+
+function shadowingConfigs(blazePort) {
+  const hits = [];
+  const portRe = new RegExp(`127\\.0\\.0\\.1:${blazePort}|localhost:${blazePort}`);
+  for (const file of codexConfigPaths()) {
+    let text = '';
+    try { text = fs.readFileSync(file, 'utf8'); } catch { continue; }
+    for (const rawLine of text.split('\n')) {
+      const line = rawLine.trim();
+      if (line.startsWith('#')) continue;
+      // openai_base_url overrides the NATIVE provider, which speaks WebSocket.
+      if (/^openai_base_url\s*=/.test(line) && portRe.test(line)) {
+        hits.push({ file, line, severity: 'bypass' });
+      }
+    }
+  }
+  return hits;
+}
+
 // Mint (and cache) a leaf certificate for one hostname, signed by our CA.
 const leafCache = new Map();
 function leafFor(hostname) {
@@ -362,5 +408,5 @@ module.exports = {
   ensureCA, caExists, deleteCA, leafFor,
   enable, disable, clearEnv, selfHealOnStart, installTeardownHooks,
   doctor, staleClients, clientBuilds, markerExists, readMarker,
-  containerRoots, mirrorCAIntoContainers, unmirrorCA
+  containerRoots, mirrorCAIntoContainers, unmirrorCA, codexConfigPaths, shadowingConfigs
 };

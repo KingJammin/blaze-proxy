@@ -511,7 +511,14 @@ function wsTunnel(cfg, req, socket, head) {
       dest: host,
       status: 101,
       ms: 0,
-      note: anyRouted ? 'WebSocket conversation — routing rules cannot apply' : undefined
+      // WHICH listener saw this matters for diagnosis: an upgrade arriving at
+      // the main port means a client is configured to talk to blaze directly
+      // (openai_base_url), bypassing transparent mode entirely. Without this
+      // field that failure is indistinguishable from a CA or routing fault.
+      listener: 'main',
+      note: anyRouted
+        ? 'WebSocket conversation on the main listener — routing rules cannot apply. If transparent mode is on, a client config is pointing at blaze directly (see `blaze-proxy transparent status`).'
+        : undefined
     });
   });
   const kill = () => { socket.destroy(); upstream.destroy(); };
