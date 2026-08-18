@@ -80,6 +80,10 @@ const DEFAULTS = {
   // Remote access to /__blaze/* requires this token (Authorization: Bearer).
   // Empty = remote control refused entirely; loopback callers never need it.
   controlToken: '',
+  // MCP gateway: when set, /mcp/* reverse-proxies here verbatim (Streamable
+  // HTTP), gated by the hashed API keystore (blaze-proxy keys ...).
+  // Empty = /mcp answers 404.
+  mcpUpstream: '',
   heartbeatSeconds: 12,
   upstreamAttempts: 3,
   upstreamRetryDelaySeconds: 3,

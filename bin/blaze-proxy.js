@@ -55,6 +55,42 @@ async function main() {
       }
       break;
     }
+    case 'keys': {
+      const keysLib = require('../src/keys');
+      const sub = process.argv[3];
+      const argOf = (flag) => {
+        const i = process.argv.indexOf(flag);
+        return i > -1 ? process.argv[i + 1] : undefined;
+      };
+      try {
+        if (sub === 'issue') {
+          const name = argOf('--name');
+          if (!name) { console.error('usage: blaze-proxy keys issue --name NAME'); process.exit(1); }
+          const { plaintext, record } = keysLib.issue(name);
+          console.log(`Issued key "${record.name}" (id ${record.id}).`);
+          console.log('');
+          console.log(`  ${plaintext}`);
+          console.log('');
+          console.log('This plaintext is shown ONCE and stored only as a hash — save it now.');
+        } else if (sub === 'revoke') {
+          const count = keysLib.revoke({ id: argOf('--id'), name: argOf('--name') });
+          console.log(`Revoked ${count} key(s). Takes effect on the next request — no restart needed.`);
+        } else if (sub === 'list') {
+          const records = keysLib.list();
+          if (!records.length) return console.log('No keys issued.');
+          for (const r of records) {
+            console.log(`${r.revokedAt ? 'revoked' : 'active '}  ${r.id}  ${r.name}  created ${r.createdAt}${r.revokedAt ? `  revoked ${r.revokedAt}` : ''}`);
+          }
+        } else {
+          console.error('usage: blaze-proxy keys <issue --name NAME | revoke --name NAME|--id ID | list>');
+          process.exit(1);
+        }
+      } catch (err) {
+        console.error(`keys ${sub}: ${err.message}`);
+        process.exit(1);
+      }
+      break;
+    }
     case 'app': {
       let electron;
       try {
@@ -69,7 +105,7 @@ async function main() {
       break;
     }
     default:
-      console.log('usage: blaze-proxy <start|stop|status|app>');
+      console.log('usage: blaze-proxy <start|stop|status|app|keys>');
       process.exitCode = 1;
   }
 }

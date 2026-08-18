@@ -88,6 +88,20 @@ One Node daemon (`src/proxy.js`), no framework, one dependency (`fzstd`):
 | `/__blaze/*` | Control API: state, config, SSE event tail |
 | `POST /api/codex/ps/mcp` | Clean 404 stub (Codex app-server probes this side-channel on custom base URLs; proxying the failure spams rmcp logs) |
 
+### MCP gateway
+
+Set `mcpUpstream` in config (e.g. `http://10.152.183.119:3100`) and blaze-proxy reverse-proxies everything under `/mcp` to it verbatim — path preserved, chunked request bodies and SSE responses streamed unbuffered (Streamable HTTP), connections held open. `/mcp` sits outside model routing **and** outside the master proxy toggle: the switch governs model interception, not your MCP server's uptime.
+
+Access requires an API key (`Authorization: Bearer <key>`), managed by CLI:
+
+```bash
+blaze-proxy keys issue --name ben     # prints the plaintext ONCE; stores sha256 only
+blaze-proxy keys list                 # ids, names, status — never plaintext
+blaze-proxy keys revoke --name ben    # takes effect on the next request, no restart
+```
+
+Keys live hashed in `~/.blaze-proxy/keys.json` (mode 600, re-read on change). The gateway strips the key before forwarding — your MCP upstream never sees it.
+
 ### Control-plane security
 
 Loopback callers always have control access (that's how the UI talks to the daemon). Remote callers are refused unless `controlToken` is set in config and sent as `Authorization: Bearer <token>` — with no token configured, a LAN-bound instance exposes the *proxy* to the network but never a config-rewrite endpoint. Instances started with a non-loopback `BLAZE_HOST` also get a loopback listener on the same port, so on-box management never needs the token. `/healthz` is always open for probes.

@@ -13,6 +13,7 @@ const fzstd = require('fzstd');
 
 const configLib = require('./config');
 const { endpointKey } = require('./keychain');
+const keysLib = require('./keys');
 
 const HOP_HEADERS = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -361,6 +362,78 @@ function wsTunnel(cfg, req, socket, head) {
   socket.on('error', kill);
 }
 
+// ————— MCP gateway (/mcp/*) —————
+// Reverse-proxies Streamable-HTTP MCP traffic verbatim to cfg.mcpUpstream:
+// path preserved, bodies streamed both ways (chunked POSTs in, SSE out, no
+// buffering), connection held open. Gated by the hashed API keystore.
+// Deliberately OUTSIDE model routing and the proxyEnabled toggle — the master
+// switch governs model-traffic interception, not the MCP server's uptime.
+function handleMcp(cfg, req, res, started) {
+  if (!cfg.mcpUpstream) {
+    const msg = JSON.stringify({ error: { message: 'no mcpUpstream configured', type: 'not_found' } });
+    res.writeHead(404, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(msg) });
+    return res.end(msg);
+  }
+
+  const auth = req.headers.authorization || '';
+  const bearer = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const record = keysLib.validate(bearer);
+  if (!record) {
+    const msg = JSON.stringify({ error: { message: 'missing, unknown, or revoked API key', type: 'unauthorized' } });
+    res.writeHead(401, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(msg), 'WWW-Authenticate': 'Bearer' });
+    res.end(msg);
+    emitEvent({ kind: 'mcp', route: 'denied', status: 401, ms: Date.now() - started });
+    return;
+  }
+
+  const { protocol, host, port, prefix } = originParts(cfg.mcpUpstream);
+  const incoming = new URL(req.url, 'http://x');
+  const headers = {};
+  for (const [name, value] of Object.entries(req.headers)) {
+    const lower = name.toLowerCase();
+    if (HOP_HEADERS.has(lower) || lower === 'authorization') continue; // gateway key never reaches the upstream
+    headers[name] = value;
+  }
+  headers.Host = host;
+
+  const mod = protocol === 'https:' ? https : http;
+  const upstreamReq = mod.request({
+    protocol, host, port,
+    path: prefix + incoming.pathname + incoming.search,
+    method: req.method,
+    headers
+  });
+  upstreamReq.on('response', (upstream) => {
+    const outHeaders = {};
+    for (const [name, value] of Object.entries(upstream.headers)) {
+      if (HOP_HEADERS.has(name.toLowerCase())) continue;
+      outHeaders[name] = value;
+    }
+    res.writeHead(upstream.statusCode, outHeaders);
+    res.flushHeaders?.();
+    upstream.pipe(res); // unbuffered — SSE frames flow as they arrive
+    upstream.on('end', () => {
+      emitEvent({ kind: 'mcp', route: 'gateway', key: record.name, dest: host, status: upstream.statusCode, ms: Date.now() - started });
+    });
+  });
+  upstreamReq.on('error', (err) => {
+    if (!res.headersSent) {
+      const msg = JSON.stringify({ error: { message: `mcp upstream unreachable: ${err.message}`, type: 'upstream_error' } });
+      res.writeHead(502, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(msg) });
+      res.end(msg);
+    } else {
+      res.destroy();
+    }
+    emitEvent({ kind: 'mcp', route: 'gateway', key: record.name, dest: host, status: 502, ms: Date.now() - started, error: err.message });
+  });
+  req.pipe(upstreamReq); // chunked request bodies stream through untouched
+  // Cancel propagation: IncomingMessage 'close' fires when the BODY completes,
+  // so hook the response instead — it closes only when the client goes away.
+  res.on('close', () => {
+    if (!res.writableEnded) upstreamReq.destroy();
+  });
+}
+
 // ————— control API for the UI (/__blaze/*) —————
 
 // Control-plane access: loopback callers are always trusted (the UI); remote
@@ -461,6 +534,12 @@ function createServer(initialCfg) {
       res.end(msg);
       emitEvent({ kind: 'request', model: null, route: 'stub', dest: 'mcp-side-channel', status: 404, ms: 0 });
       return;
+    }
+
+    // MCP gateway rides ABOVE model routing and the master toggle, and must
+    // run before readBody() — it streams the request body itself.
+    if (url.pathname === '/mcp' || url.pathname.startsWith('/mcp/')) {
+      return handleMcp(state.cfg, req, res, started);
     }
 
     const cfg = state.cfg;
