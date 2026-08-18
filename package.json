@@ -1,0 +1,25 @@
+{
+  "name": "blaze-proxy",
+  "version": "0.1.0",
+  "description": "Blaze Proxy — desktop AI model router: intercept model requests and serve them from your own endpoint",
+  "license": "MIT",
+  "repository": "github:KingJammin/blaze-proxy",
+  "bin": {
+    "blaze-proxy": "bin/blaze-proxy.js"
+  },
+  "main": "src/proxy.js",
+  "scripts": {
+    "start": "node bin/blaze-proxy.js start",
+    "app": "electron app/main.js",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "fzstd": "^0.1.1"
+  },
+  "optionalDependencies": {
+    "electron": "^33.4.11"
+  }
+}
