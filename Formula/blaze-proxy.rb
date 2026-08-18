@@ -1,8 +1,8 @@
 class BlazeProxy < Formula
   desc "Desktop AI model router - intercept model requests, serve from your own endpoint"
   homepage "https://github.com/KingJammin/blaze-proxy"
-  url "https://github.com/KingJammin/blaze-proxy/archive/refs/tags/v0.3.1.tar.gz"
-  sha256 "b647bae98dcd096578414ee8765a4b6b021653dbd16e3fc71dc65dff0ebb5b2e"
+  url "https://github.com/KingJammin/blaze-proxy/archive/refs/tags/v0.3.2.tar.gz"
+  sha256 "cf525ba01e52ffbe342edac9173e9da373c7decba732e1d436603518bef25a98"
   license "MIT"
 
   depends_on "node"
