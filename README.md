@@ -8,6 +8,13 @@ Desktop AI model router. Point your AI tools at `http://127.0.0.1:8789/v1` and B
 - **Desktop UI** — Electron app (Blaze-styled) with live request tail; the proxy itself runs fine headless.
 - **Codex-grade plumbing** — zstd request sniffing, `/v1/models` catalog patching (in-place, schema-safe), WebSocket pass-through tunneling, SSE keep-alive heartbeats while slow local models think, terminal `response.failed` events instead of dead sockets.
 
+> ### Known limitation: WebSocket conversations can't be routed
+> Routing works by reading the model out of an HTTP request. The Codex CLI talks to **models it knows natively** (e.g. `gpt-5.6-terra`, `gpt-5.6-luna`) over a WebSocket instead, and a WebSocket carries its model inside the stream — so the proxy can only tunnel it, never redirect it. Toggling such a model **will not** send it to your endpoint; requests still reach the provider and still cost money. This was measured, not assumed: stripping `use_responses_lite`, `tool_mode`, `multi_agent_version`, and `supported_in_api` from the model card does not move Codex off the WebSocket path.
+>
+> Routing **does** work for: any OpenAI-compatible client that speaks HTTP (most tools), and Codex model names the CLI has no native path for — an alias like `gpt-5.3-codex-spark` pointed at your endpoint. To serve a local model to Codex, give it an alias rather than toggling a real provider model.
+>
+> When a rule is active and a WebSocket opens anyway, the live tail marks it **BYPASS** rather than letting a toggle look effective when it isn't.
+
 ## Install
 
 **npm**

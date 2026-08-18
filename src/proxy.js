@@ -373,7 +373,14 @@ function patchModelCards(cfg, body) {
       if (!item || typeof item !== 'object') continue;
       const id = item.slug || item[key];
       if (cfg.routeAll || routedIds.has(id)) item.use_responses_lite = false;
-      if (staticPatches[id]) Object.assign(item, staticPatches[id]);
+      if (staticPatches[id]) {
+        // null means DELETE the field — some transports are selected by a
+        // field's presence, not its value, so overwriting can't express it.
+        for (const [field, value] of Object.entries(staticPatches[id])) {
+          if (value === null) delete item[field];
+          else item[field] = value;
+        }
+      }
     }
   };
   patchList(data.models, 'slug');
@@ -406,7 +413,18 @@ function wsTunnel(cfg, req, socket, head) {
     if (head && head.length) upstream.write(head);
     socket.pipe(upstream);
     upstream.pipe(socket);
-    emitEvent({ kind: 'ws', route: 'tunnel', dest: host, status: 101, ms: 0 });
+    // A WebSocket carries its model inside the encrypted stream, so routing
+    // rules cannot apply to it. If ANY model is routed, say so plainly: this
+    // conversation reached the provider despite the toggle.
+    const anyRouted = cfg.routeAll || (cfg.providers || []).some((p) => (p.models || []).some((m) => m.route));
+    emitEvent({
+      kind: 'ws',
+      route: anyRouted ? 'tunnel-bypass' : 'tunnel',
+      dest: host,
+      status: 101,
+      ms: 0,
+      note: anyRouted ? 'WebSocket conversation — routing rules cannot apply' : undefined
+    });
   });
   const kill = () => { socket.destroy(); upstream.destroy(); };
   upstream.on('error', kill);

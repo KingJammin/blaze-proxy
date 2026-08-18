@@ -236,6 +236,20 @@ document.addEventListener('keydown', (e) => {
 let reqCount = 0;
 let localCount = 0;
 function addLogRow(evt) {
+  // WebSocket conversations bypass routing entirely — show them when a rule
+  // is active, so a toggle that can't be enforced is visible instead of silent.
+  if (evt.kind === 'ws' && evt.route === 'tunnel-bypass') {
+    $('logEmpty')?.remove();
+    const log = $('log');
+    const el = document.createElement('div');
+    el.className = 'log-row';
+    el.innerHTML = '<span class="t"></span><span class="req">WebSocket</span><span class="served"></span><span class="ms"></span><span class="badge err">BYPASS</span>';
+    el.querySelector('.t').textContent = (evt.ts || '').slice(11, 19);
+    el.querySelector('.served').textContent = `→ ${evt.dest} · routing rules cannot apply to WebSocket conversations`;
+    log.insertBefore(el, log.firstChild);
+    while (log.children.length > 12) log.removeChild(log.lastChild);
+    return;
+  }
   if (evt.kind !== 'request') return;
   $('logEmpty')?.remove();
   reqCount++;
