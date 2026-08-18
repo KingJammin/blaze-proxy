@@ -9,6 +9,10 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 process.env.BLAZE_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'blaze-tp-'));
+// MANDATORY: launchctl is machine-global. Without this, clearEnv() inside a
+// test unsets the developer's own HTTPS_PROXY/CODEX_CA_CERTIFICATE — which is
+// exactly how a test run once disabled transparent mode on a live machine.
+process.env.BLAZE_NO_MACHINE_ENV = '1';
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -65,6 +69,46 @@ test('installTeardownHooks is idempotent (no listener leak on repeat calls)', ()
   transparent.installTeardownHooks();
   transparent.installTeardownHooks();
   assert.strictEqual(process.listenerCount('SIGTERM'), before);
+});
+
+test('doctor passes when a DIFFERENT live process owns the marker (CLI case)', () => {
+  // The CLI runs the doctor from its own process; comparing marker.pid to
+  // process.pid reported FAIL on a perfectly healthy machine.
+  writeMarker(process.ppid || process.pid); // a live pid that isn't necessarily us
+  const report = transparent.doctor(8799);
+  const check = report.checks.find((c) => /marker owned/.test(c.name));
+  assert.strictEqual(check.ok, true, 'a live owner must pass regardless of who runs the doctor');
+  assert.strictEqual(report.ownerAlive, true);
+  fs.unlinkSync(transparent.MARKER);
+});
+
+test('doctor fails — correctly — when the marker owner is dead', () => {
+  writeMarker(4194303);
+  const report = transparent.doctor(8799);
+  const check = report.checks.find((c) => /marker owned/.test(c.name));
+  assert.strictEqual(check.ok, false, 'a dead owner means the machine proxy is stranded');
+  assert.match(check.detail, /NOT RUNNING/);
+  fs.unlinkSync(transparent.MARKER);
+});
+
+test('every test file touching transparent.js must opt out of machine env', () => {
+  // Guard against the regression directly: a test file that calls into
+  // transparent.js without BLAZE_NO_MACHINE_ENV=1 will mutate the developer's
+  // real launchctl environment.
+  const testDir = __dirname;
+  for (const file of fs.readdirSync(testDir).filter((f) => f.endsWith('.test.js'))) {
+    const src = fs.readFileSync(path.join(testDir, file), 'utf8');
+    if (!/require\(.*transparent.*\)|require\(.*mitm.*\)/.test(src)) continue;
+    assert.match(src, /BLAZE_NO_MACHINE_ENV\s*=\s*'1'/,
+      `${file} exercises transparent/mitm but does not set BLAZE_NO_MACHINE_ENV=1`);
+  }
+});
+
+test('launchctl is a no-op while BLAZE_NO_MACHINE_ENV=1', () => {
+  // clearEnv() must be safe to call in tests: it should report "nothing
+  // cleared" rather than reaching the machine.
+  assert.strictEqual(process.env.BLAZE_NO_MACHINE_ENV, '1');
+  assert.doesNotThrow(() => transparent.clearEnv());
 });
 
 test('only OpenAI hosts are decrypted; everything else is blind-tunneled', () => {

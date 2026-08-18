@@ -30,6 +30,11 @@ const MARKER = path.join(CONFIG_DIR, 'transparent-active.json');
 const ENV_VARS = ['HTTPS_PROXY', 'HTTP_PROXY', 'ALL_PROXY', 'WSS_PROXY', 'NO_PROXY', 'CODEX_CA_CERTIFICATE'];
 
 function launchctl(args) {
+  // launchctl is MACHINE-GLOBAL: BLAZE_CONFIG_DIR isolates our files but not
+  // the user's environment. Tests must set BLAZE_NO_MACHINE_ENV=1 or they will
+  // silently unset a real user's proxy variables (this happened — a test run
+  // disabled transparent mode on a live machine).
+  if (process.env.BLAZE_NO_MACHINE_ENV === '1') return;
   execFileSync('/bin/launchctl', args, { timeout: 5000, stdio: 'ignore' });
 }
 
@@ -194,12 +199,20 @@ function doctor(port) {
       checks.push({ name: 'CA not expired', ok: new Date(caExpiry) > new Date(), detail: caExpiry });
     } catch { /* openssl unavailable */ }
   }
+  // The safety question is whether the process that set the machine proxy is
+  // still ALIVE — a marker whose owner died means stranded environment. It is
+  // NOT "is that me": the CLI runs this doctor from a different process by
+  // definition, so comparing against process.pid failed on healthy systems,
+  // and a doctor that always shows red is a doctor people stop reading.
+  const ownerAlive = Boolean(marker) && processAlive(marker.pid);
   checks.push({
-    name: 'marker owned by this process',
-    ok: Boolean(marker) && marker.pid === process.pid,
-    detail: marker ? `pid ${marker.pid}` : '(no marker)'
+    name: 'marker owned by a live daemon',
+    ok: ownerAlive,
+    detail: marker
+      ? `pid ${marker.pid}${ownerAlive ? (marker.pid === process.pid ? ' (this process)' : ' (running)') : ' — NOT RUNNING: run `blaze-proxy transparent off`'}`
+      : '(no marker)'
   });
-  return { checks, marker, caExpiry };
+  return { checks, marker, caExpiry, ownerAlive };
 }
 
 // Was a client process started BEFORE the env was set? launchctl env only
