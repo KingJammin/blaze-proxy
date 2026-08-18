@@ -245,7 +245,19 @@ async function handleIntercept(cfg, req, res, payload, rule, apiPath, started) {
 }
 
 // ————— pass-through path —————
-async function handlePassthrough(cfg, req, res, rawBody, origin, { patchModels = false, model = null, started = Date.now() } = {}) {
+// Resolve a configured upstream. The literal string "endpoint" is a sentinel
+// meaning "this upstream IS my endpoint" — it resolves to cfg.endpoint and
+// marks the pass-through for endpoint auth. This exists because address
+// string-matching cannot know that 127.0.0.1:8000 and 192.168.0.117:8000 are
+// the same vLLM (the exact bug hit on ben1); the operator states intent
+// instead and no address comparison is involved.
+function resolveUpstream(cfg, name) {
+  const value = (cfg.upstreams || {})[name];
+  if (value === 'endpoint') return { origin: cfg.endpoint, isEndpoint: true };
+  return { origin: value, isEndpoint: false };
+}
+
+async function handlePassthrough(cfg, req, res, rawBody, origin, { patchModels = false, model = null, started = Date.now(), attachEndpointKey = false } = {}) {
   const { protocol, host, port, prefix } = originParts(origin);
   const incoming = new URL(req.url, 'http://x');
   // Map /v1/... onto the upstream's own prefix (chatgpt backend has no /v1).
@@ -267,9 +279,12 @@ async function handlePassthrough(cfg, req, res, rawBody, origin, { patchModels =
   // instance whose upstream is the local vLLM) need the endpoint key —
   // the caller's gateway key was stripped at the listener, and vLLM 401s
   // otherwise. Never overrides auth the client legitimately sent.
+  // Trigger: the "endpoint" upstream sentinel (explicit intent, address-
+  // agnostic) or an exact host:port match against cfg.endpoint.
   try {
     const ep = originParts(cfg.endpoint);
-    if (host === ep.host && port === ep.port && !headers.Authorization && !headers.authorization) {
+    const endpointBound = attachEndpointKey || (host === ep.host && port === ep.port);
+    if (endpointBound && !headers.Authorization && !headers.authorization) {
       const outbound = endpointKey(cfg);
       if (outbound) headers.Authorization = `Bearer ${outbound}`;
     }
@@ -352,7 +367,14 @@ function patchModelCards(cfg, body) {
 
 // ————— WebSocket tunnel (Codex native-model transport) —————
 function wsTunnel(cfg, req, socket, head) {
-  const { host, port, prefix } = originParts(cfg.upstreams.responses);
+  const responsesOrigin = cfg.upstreams.responses === 'endpoint' ? cfg.endpoint : cfg.upstreams.responses;
+  const { protocol, host, port, prefix } = originParts(responsesOrigin);
+  if (protocol !== 'https:') {
+    // Plain-http upstreams (a local vLLM) don't speak the Codex WS protocol;
+    // refuse cleanly rather than opening a TLS socket to an http port.
+    socket.write('HTTP/1.1 501 Not Implemented\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    return socket.destroy();
+  }
   const upstream = tls.connect({ host, port, servername: host }, () => {
     const incoming = new URL(req.url, 'http://x');
     let path = incoming.pathname;
@@ -637,10 +659,12 @@ function createServer(initialCfg) {
     const isAnthropic = url.pathname.startsWith('/v1/messages');
 
     if (isModels) {
-      return handlePassthrough(cfg, req, res, rawBody, cfg.upstreams.responses, { patchModels: true, started });
+      const up = resolveUpstream(cfg, 'responses');
+      return handlePassthrough(cfg, req, res, rawBody, up.origin, { patchModels: true, started, attachEndpointKey: up.isEndpoint });
     }
     if (isAnthropic) {
-      return handlePassthrough(cfg, req, res, rawBody, cfg.upstreams.anthropic, { started });
+      const up = resolveUpstream(cfg, 'anthropic');
+      return handlePassthrough(cfg, req, res, rawBody, up.origin, { started, attachEndpointKey: up.isEndpoint });
     }
     if ((isResponses || isChat) && req.method === 'POST') {
       let model = null;
@@ -653,11 +677,14 @@ function createServer(initialCfg) {
         const apiPath = isResponses ? '/responses' : '/chat/completions';
         return handleIntercept(cfg, req, res, payload, null, apiPath, started);
       }
-      const origin = isResponses ? cfg.upstreams.responses : cfg.upstreams.chat;
-      return handlePassthrough(cfg, req, res, rawBody, origin, { model, started });
+      const up = resolveUpstream(cfg, isResponses ? 'responses' : 'chat');
+      return handlePassthrough(cfg, req, res, rawBody, up.origin, { model, started, attachEndpointKey: up.isEndpoint });
     }
     // Anything else on /v1 rides the responses upstream (Codex misc endpoints).
-    return handlePassthrough(cfg, req, res, rawBody, cfg.upstreams.responses, { started });
+    {
+      const up = resolveUpstream(cfg, 'responses');
+      return handlePassthrough(cfg, req, res, rawBody, up.origin, { started, attachEndpointKey: up.isEndpoint });
+    }
   });
 
   server.on('upgrade', (req, socket, head) => {

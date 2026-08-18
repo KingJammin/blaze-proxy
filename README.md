@@ -106,6 +106,16 @@ blaze-proxy keys revoke --name ben    # takes effect on the next request, no res
 
 Keys live hashed in `~/.blaze-proxy/keys.json` (mode 600, re-read on change). The gateway strips the key before forwarding — your MCP upstream never sees it.
 
+### When your upstream IS your endpoint
+
+On an instance whose catalog/pass-through upstream is the same server as `endpoint` (a local vLLM fronting everything), set the upstream to the literal string `"endpoint"`:
+
+```json
+"upstreams": { "responses": "endpoint", "chat": "endpoint" }
+```
+
+That resolves to `endpoint` **and** attaches the endpoint key to pass-throughs — including `GET /v1/models`, which otherwise reaches the endpoint with no credential (the caller's gateway key is stripped at the listener) and 401s. The sentinel states intent rather than comparing addresses, because `127.0.0.1:8000` and `192.168.0.117:8000` can be the same server and no string match can know it. An upstream written as a literal URL only gets the key when it matches `endpoint` exactly.
+
 ### One key for everything (listener-scoped auth)
 
 The same `bzp_` keys that gate `/mcp` can gate **model paths** too, per listener class:
