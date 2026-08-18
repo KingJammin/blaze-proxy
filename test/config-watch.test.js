@@ -9,6 +9,10 @@ const os = require('os');
 const path = require('path');
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'blaze-watch-'));
 process.env.BLAZE_CONFIG_DIR = dir;
+// Poll fast so the assertions stay deterministic when the suite runs its
+// files in parallel and the box is loaded (1s polling + an 8s deadline was
+// flaky under load — a flaky test is worse than no test).
+process.env.BLAZE_CONFIG_WATCH_INTERVAL = '100';
 
 const { test, after } = require('node:test');
 const assert = require('node:assert');
@@ -33,6 +37,11 @@ test('an external edit to config.json is picked up live', async () => {
   configLib.save({ ...configLib.load(), endpoint: 'https://before.example/v1' });
   let latest = null;
   configLib.watch((next) => { latest = next; });
+  // fs.watchFile takes its baseline stat asynchronously; under a loaded
+  // parallel suite an immediate write can land before that baseline exists
+  // and would then never register as a change. Benign in production (the
+  // daemon reads config at startup regardless), but the test must not race it.
+  await new Promise((r) => setTimeout(r, 500));
 
   // Someone edits the file by hand.
   const onDisk = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));

@@ -144,7 +144,8 @@ function save(cfg) {
 // fs.watchFile (polling) rather than fs.watch: rename-based atomic writes
 // break watch descriptors, and 1s polling on one small file is free.
 function watch(onChange) {
-  fs.watchFile(CONFIG_PATH, { interval: 1000 }, () => {
+  const interval = Number(process.env.BLAZE_CONFIG_WATCH_INTERVAL || 1000);
+  fs.watchFile(CONFIG_PATH, { interval }, () => {
     let text;
     try { text = fs.readFileSync(CONFIG_PATH, 'utf8'); } catch { return; }
     if (text === lastWritten) return; // our own save — already in memory
