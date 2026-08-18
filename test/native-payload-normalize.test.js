@@ -100,3 +100,83 @@ test('the result is JSON-serialisable and carries no ChatGPT-only keys', () => {
     'store', 'stream', 'text', 'tool_choice', 'tools'
   ]);
 });
+
+// ————— the real trigger: a nested input item, not a top-level field —————
+// Peer testing against live vLLM, each field in isolation:
+//   plain message input                     200
+//   input[].type = "additional_tools"       400  <-- the ONLY failure
+//   client_metadata / reasoning.context /
+//   text.verbosity / include / prompt_cache_key  200
+// A top-level allowlist cannot see it, because it lives inside `input`.
+
+test('an additional_tools input item is removed', () => {
+  const out = normalizeNativePayload({
+    model: 'm',
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+      { type: 'additional_tools', role: 'system', tools: [] }
+    ]
+  });
+  assert.strictEqual(out.input.length, 1);
+  assert.strictEqual(out.input[0].type, 'message');
+});
+
+test('tools inside that item are HOISTED, not discarded', () => {
+  // Dropping them would trade a loud 400 for silent loss of function calling.
+  const out = normalizeNativePayload({
+    model: 'm',
+    input: [
+      { type: 'message', role: 'user', content: [] },
+      { type: 'additional_tools', role: 'system', tools: [
+        { name: 'functions', tools: [
+          { name: 'shell', description: 'run a command', parameters: { type: 'object', properties: { cmd: { type: 'string' } } } },
+          { name: 'apply_patch', description: 'edit files', parameters: { type: 'object' } }
+        ] },
+        { name: 'collaboration', tools: [
+          { name: 'ask_user', description: 'ask', parameters: { type: 'object' } }
+        ] }
+      ] }
+    ]
+  });
+  assert.ok(!out.input.some((i) => i.type === 'additional_tools'), 'the item itself must go');
+  assert.ok(Array.isArray(out.tools), 'its tools must survive at top level');
+  const names = out.tools.map((t) => t.name).sort();
+  assert.deepStrictEqual(names, ['apply_patch', 'ask_user', 'shell'],
+    'every nested tool is hoisted and flattened across namespaces');
+  for (const t of out.tools) {
+    assert.strictEqual(t.type, 'function', 'hoisted tools must carry the standard function type');
+    assert.ok(t.parameters, 'a function tool needs parameters');
+  }
+});
+
+test('hoisted tools merge with any existing top-level tools', () => {
+  const out = normalizeNativePayload({
+    model: 'm',
+    tools: [{ type: 'function', name: 'existing', parameters: { type: 'object' } }],
+    input: [{ type: 'additional_tools', tools: [{ name: 'hoisted', parameters: { type: 'object' } }] }]
+  });
+  assert.deepStrictEqual(out.tools.map((t) => t.name).sort(), ['existing', 'hoisted']);
+});
+
+test('standard input item types are all preserved', () => {
+  const input = [
+    { type: 'message', role: 'user', content: [] },
+    { type: 'function_call', call_id: 'c1', name: 'shell', arguments: '{}' },
+    { type: 'function_call_output', call_id: 'c1', output: 'ok' },
+    { type: 'reasoning', summary: [] },
+    { type: 'item_reference', id: 'x' },
+    { role: 'user', content: 'untyped is a message in practice' }
+  ];
+  const out = normalizeNativePayload({ model: 'm', input });
+  assert.strictEqual(out.input.length, input.length, 'nothing standard may be dropped');
+});
+
+test('an unknown input item with no tools is dropped and reported', () => {
+  const seen = [];
+  const out = normalizeNativePayload(
+    { model: 'm', input: [{ type: 'zz_unknown_item_type', foo: 1 }] },
+    (k) => seen.push(k)
+  );
+  assert.strictEqual(out.input.length, 0);
+  assert.ok(seen.some((s) => s.includes('zz_unknown_item_type')), 'unknown item types stay visible');
+});

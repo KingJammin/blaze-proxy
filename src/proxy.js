@@ -926,7 +926,7 @@ function start() {
     try {
       transparentLib.installTeardownHooks();
       const mitmPort = Number(cfg.transparent.port || 8799);
-      mitm = createMitmServer({ blazePort: port, onEvent: emitEvent });
+      mitm = createMitmServer({ blazePort: port, onEvent: emitEvent, getConfig: () => state.cfg });
       mitm.listen(mitmPort, '127.0.0.1', () => {
         const info = transparentLib.enable(mitmPort);
         console.log(`blaze-proxy transparent mode ON — proxy ${info.proxyUrl}, CA ${info.caCert}`);
