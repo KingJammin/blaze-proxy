@@ -256,7 +256,7 @@ function leafFor(hostname) {
 // ————— enable / disable —————
 
 function enable(port) {
-  if (process.platform !== 'darwin') throw new Error('transparent mode currently supports macOS only');
+  require('./platform').requireMac('Transparent mode');
   const ca = ensureCA();
   // The CA path is consumed by client apps whose HOME is NOT ours — sandboxed
   // and translocated ChatGPT builds resolve a relative or ~-prefixed path

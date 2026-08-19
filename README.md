@@ -8,7 +8,7 @@ Desktop AI model router. Point your AI tools at `http://127.0.0.1:8789/v1` and B
 - **Desktop UI** — Electron app (Blaze-styled) with live request tail; the proxy itself runs fine headless.
 - **Codex-grade plumbing** — zstd request sniffing, `/v1/models` catalog patching (in-place, schema-safe), WebSocket pass-through tunneling, SSE keep-alive heartbeats while slow local models think, terminal `response.failed` events instead of dead sockets.
 
-> ### Transparent mode (macOS, opt-in, off by default)
+### Transparent mode (macOS, opt-in, off by default)
 
 Routes the Codex/ChatGPT app through blaze with **no client configuration at all** — no `config.toml` edits, no profile. Blaze becomes the machine's HTTPS proxy for OpenAI hosts, terminates TLS with its own local CA, refuses WebSocket upgrades so Codex falls back to HTTP (`"Falling back from WebSockets to HTTPS transport"`), and routes the decrypted request through the normal engine.
 
@@ -30,26 +30,40 @@ Enable it by setting `transparent: { "enabled": true }` in config (a Settings to
 **Debugging a failing endpoint.** `"captureFailures": true` writes the request and response of *failing* intercepted calls to `~/.blaze-proxy/failed-requests` (mode 600, capped at 200 files). These files contain conversation content, so it is off by default, announced loudly in the log while on, and meant to be switched off once you've found the trigger.
 
 ### Codex: use a custom provider, or routing can't reach you
-> Routing works by reading the model out of an HTTP request. Under its **native** provider (`model_provider = "openai"`), the Codex CLI talks to models ChatGPT actually serves — `gpt-5.6-terra`, `gpt-5.6-luna` — over a **WebSocket**, which carries its model inside the stream. The proxy can only tunnel those, never redirect them, so toggling such a model has no effect and the request still reaches the provider and still costs money. Measured, not assumed: stripping `use_responses_lite`, `tool_mode`, `multi_agent_version`, and `supported_in_api` from the model card does not move Codex off that path.
->
-> **The fix is provider-level.** A custom provider with `wire_api = "responses"` has no WebSocket option, so Codex speaks HTTP POST — which the proxy can sniff and intercept, for real model names. Put this in a standalone profile file (current Codex rejects `[profiles.X]` inside `config.toml`):
->
-> ```toml
-> # ~/.codex/blaze.config.toml
-> model = "gpt-5.6-luna"
-> model_provider = "blaze_local"
->
-> [model_providers.blaze_local]
-> base_url = "http://127.0.0.1:8789/v1"
-> wire_api = "responses"
-> ```
-> ```bash
-> codex exec --profile blaze  "…"     # now intercepted → your endpoint
-> ```
->
-> Everything else needs no special setup: any OpenAI-compatible HTTP client, and alias model names Codex has no native path for (e.g. `gpt-5.3-codex-spark`), route normally.
->
-> When a rule is active and a WebSocket opens anyway, the live tail marks it **BYPASS** rather than letting a toggle look effective when it isn't.
+
+Routing works by reading the model out of an HTTP request. Under its **native** provider (`model_provider = "openai"`), the Codex CLI talks to models ChatGPT actually serves — `gpt-5.6-terra`, `gpt-5.6-luna` — over a **WebSocket**, which carries its model inside the stream. The proxy can only tunnel those, never redirect them, so toggling such a model has no effect and the request still reaches the provider and still costs money. Measured, not assumed: stripping `use_responses_lite`, `tool_mode`, `multi_agent_version`, and `supported_in_api` from the model card does not move Codex off that path.
+
+**The fix is provider-level.** A custom provider with `wire_api = "responses"` has no WebSocket option, so Codex speaks HTTP POST — which the proxy can sniff and intercept, for real model names. Put this in a standalone profile file (current Codex rejects `[profiles.X]` inside `config.toml`):
+
+```toml
+# ~/.codex/blaze.config.toml
+model = "gpt-5.6-luna"
+model_provider = "blaze_local"
+
+[model_providers.blaze_local]
+base_url = "http://127.0.0.1:8789/v1"
+wire_api = "responses"
+```
+```bash
+codex exec --profile blaze  "…"     # now intercepted → your endpoint
+```
+
+Everything else needs no special setup: any OpenAI-compatible HTTP client, and alias model names Codex has no native path for (e.g. `gpt-5.3-codex-spark`), route normally.
+
+When a rule is active and a WebSocket opens anyway, the live tail marks it **BYPASS** rather than letting a toggle look effective when it isn't.
+
+## Platform support
+
+| | macOS | Windows | Linux |
+|---|---|---|---|
+| Core routing (`/v1/responses`, `/v1/chat/completions`, model rules, control API) | ✅ | ✅ | ✅ |
+| MCP gateway + API keystore | ✅ | ✅ | ✅ |
+| OS credential store | ✅ keychain | ❌ use `BLAZE_ENDPOINT_KEY` | ❌ use `BLAZE_ENDPOINT_KEY` |
+| Transparent mode (zero client config) | ✅ | ❌ not implemented | ❌ not implemented |
+
+The daemon installs and routes anywhere Node 20+ runs; it reports its own capabilities at startup and in `/__blaze/state`. Only the parts that reach into the operating system are macOS-specific.
+
+**On a Windows port:** transparent mode would not carry over as-is, and one property in particular does not survive. On macOS, CA trust is scoped to processes reading `CODEX_CA_CERTIFICATE` and needs **no administrator password**. Windows clients that ignore CA environment variables would need the certificate in the system store, which **requires elevation** and grants machine-wide trust — a materially different security proposition that belongs in a prompt, not a footnote. A port should prefer `NODE_EXTRA_CA_CERTS`/`SSL_CERT_FILE` where clients honour them and treat the certificate store as a last resort. Note also that CA generation currently shells out to `openssl`, which Windows does not ship in PATH; Node core cannot issue X.509 certificates (`crypto.Certificate` is SPKAC-only), so a port needs a bundled certificate library.
 
 ## Install
 

@@ -238,3 +238,31 @@ test('commented-out settings are ignored', () => {
     delete require.cache[require.resolve('../src/transparent')];
   }
 });
+
+// ————— platform honesty —————
+
+test('the macOS guard permits macOS and refuses anything else', () => {
+  const platform = require('../src/platform');
+  if (platform.IS_MAC) {
+    assert.doesNotThrow(() => platform.requireMac('Transparent mode'), 'must not block the platform it supports');
+  } else {
+    assert.throws(() => platform.requireMac('Transparent mode'), /macOS-only/);
+  }
+  // The refusal message must point somewhere useful on every platform, so
+  // check the text itself rather than only the throw.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'src', 'platform.js'), 'utf8');
+  assert.match(src, /BLAZE_ENDPOINT_KEY/, 'the guard should name the workaround');
+  assert.match(src, /macOS-only/);
+});
+
+test('capabilities never claim support for OS features off macOS', () => {
+  const platform = require('../src/platform');
+  const caps = platform.capabilities();
+  assert.strictEqual(caps.coreRouting.supported, true, 'the router is portable and must say so');
+  assert.strictEqual(caps.apiKeystore.supported, true);
+  if (!platform.IS_MAC) {
+    for (const key of ['transparentMode', 'osCredentialStore', 'clientDiscovery', 'caGeneration']) {
+      assert.strictEqual(caps[key].supported, false, `${key} must not claim support on ${process.platform}`);
+    }
+  }
+});

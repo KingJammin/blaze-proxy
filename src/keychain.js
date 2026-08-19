@@ -3,6 +3,7 @@
 const { execFileSync } = require('child_process');
 
 let cached;
+let warnedNoKeychain = false;
 
 function clearCache() { cached = undefined; }
 
@@ -14,6 +15,16 @@ function endpointKey(cfg) {
   if (auth.type === 'value' && auth.value) return auth.value;
   if (auth.type === 'keychain') {
     if (cached !== undefined) return cached;
+    if (process.platform !== 'darwin') {
+      // Silently returning '' here looks like "no key configured" and sends
+      // people hunting the wrong problem. Say what to do instead, once.
+      if (!warnedNoKeychain) {
+        warnedNoKeychain = true;
+        console.error(`blaze-proxy: config wants the macOS keychain but this is ${process.platform} — set BLAZE_ENDPOINT_KEY, or endpointAuth {"type":"value"} in config.`);
+      }
+      cached = '';
+      return cached;
+    }
     try {
       cached = execFileSync('/usr/bin/security', [
         'find-generic-password',

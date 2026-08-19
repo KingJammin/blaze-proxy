@@ -18,6 +18,7 @@ const keysLib = require('./keys');
 const transparentLib = require('./transparent');
 const { createMitmServer } = require('./mitm');
 const captureLib = require('./capture');
+const platformLib = require('./platform');
 
 const HOP_HEADERS = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -688,6 +689,7 @@ function handleControl(state, req, res) {
       version: require('../package.json').version,
       requestCount,
       apiKey: keychainLib.describeEndpointKey(state.cfg),
+      platform: platformLib.capabilities(),
       // NOTE: `unmanaged` only sees models parsed out of HTTP requests.
       // WebSocket conversations are opaque, so consult `ws` for those —
       // ws.bypass > 0 means traffic left via a tunnel while rules were active.
@@ -888,6 +890,7 @@ function start() {
   // proxy, its env vars still point at a dead port. Clear them.
   transparentLib.selfHealOnStart();
   captureLib.announceOnce(cfg); // loud, because it records conversation content
+  platformLib.warnAtStartup();
 
   // Last-resort guards: a router that stays up serving errors beats one that
   // exits and drops every connection. Per-request faults are already caught;
