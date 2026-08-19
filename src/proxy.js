@@ -19,6 +19,7 @@ const transparentLib = require('./transparent');
 const { createMitmServer } = require('./mitm');
 const captureLib = require('./capture');
 const platformLib = require('./platform');
+const fleetLib = require('./fleet');
 
 const HOP_HEADERS = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -474,6 +475,66 @@ function patchModelCards(cfg, body) {
   return Buffer.from(JSON.stringify(data));
 }
 
+
+// ————— serving our own /v1/models —————
+//
+// Third-party OpenAI-compatible clients (Cursor, Zed, Continue, aider,
+// LibreChat…) call GET /v1/models to validate an endpoint and populate their
+// model picker. Proxying that upstream only works for a caller holding ChatGPT
+// credentials — everyone else got a 401 and concluded blaze was misconfigured,
+// which is a strange limitation for a proxy whose whole purpose is serving your
+// own endpoint. So: serve our own catalog unless the caller is clearly Codex,
+// in which case keep pass-through-and-patch so its card behaviour is unchanged.
+function looksLikeChatGPTClient(req) {
+  const h = req.headers || {};
+  if (h['chatgpt-account-id']) return true;
+  // Codex tags its catalog fetch with the client version.
+  if (/[?&]client_version=/.test(req.url || '')) return true;
+  const auth = h.authorization || '';
+  // ChatGPT session tokens are JWTs; a keystore key or a plain API key is not.
+  if (/^Bearer\s+eyJ/.test(auth)) return true;
+  return false;
+}
+
+function localModelsCatalog(cfg) {
+  const created = 1700000000;
+  const seen = new Set();
+  const data = [];
+  for (const provider of cfg.providers || []) {
+    for (const model of provider.models || []) {
+      if (!model?.id || seen.has(model.id)) continue;
+      seen.add(model.id);
+      data.push({
+        id: model.id,
+        object: 'model',
+        created,
+        owned_by: 'blaze',
+        // Non-standard but harmless, and genuinely useful in a picker.
+        blaze: { routed: Boolean(model.route || cfg.routeAll), dest: model.dest || null, provider: provider.id }
+      });
+    }
+  }
+  // The endpoint's own destination model is servable even if no rule names it.
+  for (const dest of new Set(data.map((m) => m.blaze?.dest).filter(Boolean))) {
+    if (!seen.has(dest)) {
+      seen.add(dest);
+      data.push({ id: dest, object: 'model', created, owned_by: 'blaze', blaze: { routed: true, dest, provider: 'endpoint' } });
+    }
+  }
+  return { object: 'list', data };
+}
+
+function serveLocalCatalog(cfg, res, started) {
+  const body = Buffer.from(JSON.stringify(localModelsCatalog(cfg)));
+  res.writeHead(200, {
+    'Content-Type': 'application/json',
+    'Content-Length': body.length,
+    'x-blaze-catalog': 'local'
+  });
+  res.end(body);
+  emitEvent({ kind: 'request', model: null, route: 'catalog', dest: 'blaze', status: 200, ms: Date.now() - started });
+}
+
 // ————— WebSocket tunnel (Codex native-model transport) —————
 function wsTunnel(cfg, req, socket, head) {
   const responsesOrigin = cfg.upstreams.responses === 'endpoint' ? cfg.endpoint : cfg.upstreams.responses;
@@ -689,6 +750,14 @@ function handleControl(state, req, res) {
       version: require('../package.json').version,
       requestCount,
       apiKey: keychainLib.describeEndpointKey(state.cfg),
+      // Why the Agents pane can or cannot load, without the UI having to
+      // re-derive the rule from raw config.
+      fleet: (() => {
+        const status = fleetLib.fleetStatus(state.cfg);
+        return status.ok
+          ? { ready: true, apiBase: status.base.origin + status.base.pathname.replace(/\/$/, '') }
+          : { ready: false, code: status.code, message: status.message };
+      })(),
       platform: platformLib.capabilities(),
       // NOTE: `unmanaged` only sees models parsed out of HTTP requests.
       // WebSocket conversations are opaque, so consult `ws` for those —
@@ -735,6 +804,9 @@ function handleControl(state, req, res) {
     tailClients.add(res);
     req.on('close', () => tailClients.delete(res));
     return;
+  }
+  if (url.pathname === '/__blaze/fleet' || url.pathname.startsWith('/__blaze/fleet/')) {
+    return fleetLib.relay(state.cfg, req, res, endpointKey(state.cfg));
   }
   if (url.pathname === '/__blaze/transparent' && req.method === 'GET') {
     const port = Number(state.cfg.transparent?.port || 8799);
@@ -832,6 +904,9 @@ function createServer(initialCfg) {
     const isAnthropic = url.pathname.startsWith('/v1/messages');
 
     if (isModels) {
+      const mode = cfg.modelsCatalog || 'auto';
+      const serveLocal = mode === 'local' || (mode === 'auto' && !looksLikeChatGPTClient(req));
+      if (serveLocal) return serveLocalCatalog(cfg, res, started);
       const up = resolveUpstream(cfg, 'responses');
       return handlePassthrough(cfg, req, res, rawBody, up.origin, { patchModels: true, started, attachEndpointKey: up.isEndpoint });
     }
@@ -966,6 +1041,6 @@ function start() {
   return { server, state, aux };
 }
 
-module.exports = { createServer, start, patchModelCards, controlAllowed, scrubForEndpoint, scrubChatForEndpoint, isEmptyMessageItem };
+module.exports = { createServer, start, patchModelCards, controlAllowed, localModelsCatalog, looksLikeChatGPTClient, scrubForEndpoint, scrubChatForEndpoint, isEmptyMessageItem };
 
 if (require.main === module) start();

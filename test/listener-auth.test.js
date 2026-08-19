@@ -33,6 +33,8 @@ before(async () => {
     ...base,
     proxyEnabled: true,
     routeAll: true,
+    // this test exercises the /v1/models PASS-THROUGH path, not the local catalog
+    modelsCatalog: 'upstream',
     endpoint: `${mockOrigin}/v1`,
     endpointAuth: { type: 'value', value: 'endpoint-secret' },
     // Catalog upstream = the endpoint itself (ben1's shape).

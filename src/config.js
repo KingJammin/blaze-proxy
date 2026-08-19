@@ -101,6 +101,10 @@ const DEFAULTS = {
   //          ALSO withdraws the control API's loopback trust — set
   //          controlToken for on-box management in that case.
   listenerAuth: { loopback: 'open', lan: 'open' },
+  // Agent fleet (Blaze dashboard-api). When enabled, /__blaze/fleet/* relays to
+  // apiBase with the endpoint key attached as bearer, so the UI can show fleet
+  // state without ever holding the key or reaching a non-loopback origin.
+  fleet: { enabled: false, apiBase: '' },
   // Transparent interception (macOS): become the machine's HTTPS proxy so
   // clients need no configuration at all. OFF by default — enabling sets
   // machine-global env vars for GUI apps, which is the user's call, not a
@@ -110,6 +114,11 @@ const DEFAULTS = {
   // ~/.blaze-proxy/failed-requests. Off by default — these files contain
   // conversation content. Turn on only to chase an upstream payload bug.
   captureFailures: false,
+  // GET /v1/models: 'auto' serves blaze's own catalog to third-party
+  // OpenAI-compatible clients (Cursor, Zed, aider…) while Codex keeps the
+  // upstream pass-through-and-patch it depends on. 'local' always serves ours,
+  // 'upstream' always proxies (pre-v0.6 behaviour).
+  modelsCatalog: 'auto',
   heartbeatSeconds: 12,
   upstreamAttempts: 3,
   upstreamRetryDelaySeconds: 3,
@@ -129,6 +138,7 @@ function load() {
   // Deep-default only the maps whose absence would crash the router.
   merged.upstreams = { ...DEFAULTS.upstreams, ...(cfg.upstreams || {}) };
   merged.listenerAuth = { ...DEFAULTS.listenerAuth, ...(cfg.listenerAuth || {}) };
+  merged.fleet = { ...DEFAULTS.fleet, ...(cfg.fleet || {}) };
   if (!Array.isArray(merged.providers) || merged.providers.length === 0) {
     merged.providers = structuredClone(DEFAULTS.providers);
   }

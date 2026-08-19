@@ -40,6 +40,8 @@ function serveWith(upstreamsResponses, endpointHost) {
   const cfg = {
     ...base,
     routeAll: true,
+    // this test exercises the /v1/models PASS-THROUGH path, not the local catalog
+    modelsCatalog: 'upstream',
     // endpoint uses a DIFFERENT address string than the literal upstream but
     // resolves to the SAME server — exactly the ben1 shape (192.168.0.117 vs
     // 127.0.0.1 both being the one vLLM). Here: localhost vs 127.0.0.1.

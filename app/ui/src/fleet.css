@@ -1,0 +1,67 @@
+/* Bridging styles: dashboard-web assumed it owned the page (`.app-shell`,
+   `.main-content`). Inside the desktop app it owns only a pane, so re-anchor
+   the few rules that depended on that, and align its accent with the app's. */
+
+#fleetRoot {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  color: #e4e4e7;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* dashboard-web set these on :root for a standalone page. */
+#fleetRoot .page-head {
+  margin-bottom: 0;
+}
+
+.fleet-loading {
+  display: grid;
+  place-items: center;
+  gap: 14px;
+  padding: 72px 24px;
+  text-align: center;
+  color: #71717a;
+}
+.fleet-loading .blaze-mark {
+  width: 40px;
+  height: 40px;
+  color: #ff2e00;
+}
+.fleet-loading p {
+  margin: 0;
+  font-size: 12.5px;
+}
+
+/* The fleet's fullscreen workspaces are page-level overlays; keep them above
+   the app's own modals rather than trapped inside the pane. */
+#fleetRoot .overlay {
+  z-index: 30;
+}
+
+/* Not-ready state, rendered by the shell rather than React — the pane is not
+   even mounted when the daemon says the fleet is unreachable. */
+.fleet-blocked {
+  display: grid;
+  place-items: center;
+  padding: 64px 24px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 14px;
+  text-align: center;
+}
+.fleet-blocked h2 {
+  margin: 0 0 6px;
+  font-size: 15px;
+  color: var(--text);
+}
+.fleet-blocked p {
+  margin: 0 auto;
+  max-width: 46ch;
+  font-size: 12px;
+  color: var(--dim);
+}
+.fleet-blocked code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--orange);
+}

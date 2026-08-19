@@ -24,6 +24,8 @@ before(async () => {
   const cfg = {
     ...base,
     proxyEnabled: true,
+    // this test probes the /v1/models PASS-THROUGH path, not the local catalog
+    modelsCatalog: 'upstream',
     // Deliberately broken: not a URL, and not the sentinel.
     upstreams: { ...base.upstreams, responses: 'totally-not-a-url', chat: 'also::broken' }
   };
@@ -71,6 +73,8 @@ test('patchModelCards survives a vLLM-shaped catalog (not just chatgpt-shaped)',
   }));
   const cfg = {
     routeAll: true,
+    // this test exercises the /v1/models PASS-THROUGH path, not the local catalog
+    modelsCatalog: 'upstream',
     providers: [{ id: 'openai', models: [{ id: 'gpt-5.3-codex-spark', route: true }] }],
     modelCardPatches: { 'gpt-5.3-codex-spark': { context_window: 1048576 } }
   };
