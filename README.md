@@ -50,6 +50,8 @@ codex exec --profile blaze  "…"     # now intercepted → your endpoint
 
 Everything else needs no special setup: any OpenAI-compatible HTTP client, and alias model names Codex has no native path for (e.g. `gpt-5.3-codex-spark`), route normally.
 
+**Write it into `config.toml`, not a `-c` flag.** Settings passed as `codex -c chatgpt_base_url=…` do **not** reach a nested Codex that an agent spawns for itself: the child reads `$CODEX_HOME/config.toml`, finds nothing, and goes to the vendor. Both `model` and the base URL have to be in the file. This bites agent fleets specifically, where the outer invocation looks correctly routed while every nested one silently isn't.
+
 When a rule is active and a WebSocket opens anyway, the live tail marks it **BYPASS** rather than letting a toggle look effective when it isn't.
 
 ## Platform support
