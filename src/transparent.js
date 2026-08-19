@@ -386,6 +386,92 @@ function clientBuilds() {
   return builds;
 }
 
+// A macOS notification is the only channel that reaches the operator when the
+// daemon starts at login: nobody is reading a launchd log at 09:55. Best
+// effort by design — a machine without osascript, or a notification the user
+// has muted, must never keep the proxy from starting.
+function notify(title, message) {
+  if (process.platform !== 'darwin') return false;
+  if (process.env.BLAZE_NO_MACHINE_ENV === '1') return false;
+  const esc = (s) => String(s).replace(/[\\"]/g, '\\$&');
+  try {
+    execFileSync('/usr/bin/osascript',
+      ['-e', `display notification "${esc(message)}" with title "${esc(title)}"`],
+      { timeout: 5000, stdio: 'ignore' });
+    return true;
+  } catch { return false; }
+}
+
+// Which running clients are actually NOT routed.
+//
+// This asks each process what environment it holds, rather than comparing its
+// start time to our marker. Timestamps get this wrong in both directions: every
+// daemon restart moves the marker, so clients that already hold the env — and
+// are routing perfectly — all look stale at once (observed: the daemon restarted
+// and flagged a ChatGPT.app that was demonstrably routed). `ps eww` reports the
+// environment a process was actually started with, which is the thing that
+// decides whether it reaches us, so it is the only honest test.
+//
+// Values can contain spaces (CA paths do), so match to the next VAR= boundary
+// rather than splitting on whitespace.
+function bypassingClients(port) {
+  const want = `http://127.0.0.1:${port}`;
+  // Judge per BUNDLE across ALL of its processes, not one representative pid.
+  // An app accumulates helpers over its lifetime, and a helper started before
+  // the env was published holds a different environment from the app that
+  // spawned it — so picking any single pid reports whichever one it happened to
+  // find first. A build is only genuinely unrouted when NOTHING under it can
+  // reach us; if the main process holds the proxy, new conversations route.
+  const byBundle = new Map();
+  let ps = '';
+  try {
+    ps = execFileSync('/bin/ps', ['-Ao', 'pid,comm'], { encoding: 'utf8', timeout: 5000 });
+  } catch { return []; }
+
+  for (const line of ps.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(.*(?:ChatGPT|codex).*)$/i);
+    if (!m) continue;
+    if (/blaze/i.test(m[2])) continue;
+    const pid = Number(m[1]);
+    const bundle = (m[2].match(/^(.*?\.app)\//) || [null, m[2]])[1];
+
+    let env = '';
+    try {
+      env = execFileSync('/bin/ps', ['eww', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 });
+    } catch { continue; } // process gone, or not ours to inspect
+    // Values contain spaces (CA paths do), so match to the next VAR= boundary.
+    const pm = env.match(/HTTPS_PROXY=(.*?)(?= [A-Za-z_][A-Za-z0-9_]*=|\s*$)/);
+    const proxy = pm ? pm[1].trim() : '';
+
+    const cur = byBundle.get(bundle) || { bundle, pid, proxy: null, routed: false };
+    if (proxy === want) { cur.routed = true; cur.proxy = proxy; cur.pid = pid; }
+    byBundle.set(bundle, cur);
+  }
+
+  return [...byBundle.values()].filter((b) => !b.routed).map(({ bundle, pid, proxy }) => ({ bundle, pid, proxy: proxy || null }));
+}
+
+// The login race: launchctl env only reaches processes started AFTER we set
+// it, and at login the Codex clients are restored by macOS at the same moment
+// launchd starts us — measured, we lost by 8 seconds. We cannot win that race
+// (publishing earlier does not help; the clients are already up), and we will
+// not restart someone's apps unasked. What we CAN do is refuse to fail
+// silently: a bypassed client burns vendor quota and looks exactly like a
+// working one, so say so out loud, at the moment we know.
+function warnStaleClients(marker, port) {
+  const mitmPort = Number(port || marker?.port) || 8799;
+  const bypassing = bypassingClients(mitmPort);
+  if (!bypassing.length) return bypassing;
+  console.warn(`blaze-proxy: ${bypassing.length} client build(s) have no route to this proxy — THEY WILL USE VENDOR QUOTA:`);
+  for (const c of bypassing) {
+    console.warn(`  ${c.bundle}  (pid ${c.pid}, HTTPS_PROXY=${c.proxy || 'unset'})`);
+  }
+  console.warn('blaze-proxy: restart them to route through blaze (`blaze-proxy transparent status` lists every pid)');
+  notify('Blaze Proxy — clients not routed',
+    `${bypassing.length} Codex/ChatGPT build(s) are going straight to the vendor. Restart them.`);
+  return bypassing;
+}
+
 function staleClients(marker) {
   if (!marker?.enabledAt) return [];
   const since = new Date(marker.enabledAt).getTime();
@@ -407,6 +493,6 @@ module.exports = {
   CA_DIR, CA_CERT, CA_KEY, MARKER, ENV_VARS,
   ensureCA, caExists, deleteCA, leafFor,
   enable, disable, clearEnv, selfHealOnStart, installTeardownHooks,
-  doctor, staleClients, clientBuilds, markerExists, readMarker,
+  doctor, staleClients, warnStaleClients, bypassingClients, notify, clientBuilds, markerExists, readMarker,
   containerRoots, mirrorCAIntoContainers, unmirrorCA, codexConfigPaths, shadowingConfigs
 };

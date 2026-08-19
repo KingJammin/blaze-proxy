@@ -8,6 +8,9 @@ const path = require('path');
 const configLib = require('../src/config');
 
 let daemon = null;
+// True only when WE started the daemon. A daemon we merely found running is
+// somebody else's (launchd, a CLI `blaze-proxy start`) and outlives this app.
+let daemonOwned = false;
 
 function daemonAlive(port) {
   return new Promise((resolve) => {
@@ -22,6 +25,7 @@ function daemonAlive(port) {
 
 async function ensureDaemon(port) {
   if (await daemonAlive(port)) return 'already-running';
+  daemonOwned = true;
   daemon = spawn(process.execPath, [path.join(__dirname, '..', 'bin', 'blaze-proxy.js'), 'start'], {
     stdio: 'ignore',
     detached: false,
@@ -58,9 +62,11 @@ async function createWindow() {
   });
 }
 
-// Stop the daemon on quit. Uses the control API rather than killing our child
-// handle, so it also stops a daemon that was already running when we opened
-// (state 'already-running') — the app owns proxy lifetime either way.
+// Stop the daemon on quit — but ONLY one we started ourselves. A daemon that
+// was already running when we opened belongs to whoever started it (launchd's
+// com.benpelo.blaze-proxy, or a CLI `blaze-proxy start`), and shutting it down
+// here took routing down every time the app was quit. Under launchd KeepAlive
+// it also fought the supervisor: shutdown, respawn, repeat.
 function stopDaemon(port) {
   return new Promise((resolve) => {
     const req = http.request(
@@ -76,7 +82,8 @@ function stopDaemon(port) {
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  // Proxy lifetime is tied to the app: closing the window stops routing.
+  // Closing the window quits the app. Routing only stops with it if this app
+  // was the one that started the daemon; a supervised daemon keeps running.
   app.quit();
 });
 
@@ -85,12 +92,12 @@ app.on('before-quit', (event) => {
   if (shuttingDown) return;
   event.preventDefault();
   shuttingDown = true;
+  if (!daemonOwned) { app.quit(); return; }
   const cfg = configLib.load();
   const port = Number(process.env.BLAZE_PORT || cfg.port);
   stopDaemon(port).then(() => {
     // Belt and braces: if the daemon ignored the shutdown request, kill the
-    // child we spawned. detached:false already ties it to us, but an
-    // already-running daemon has no child handle.
+    // child we spawned. detached:false already ties it to us.
     if (daemon && !daemon.killed) { try { daemon.kill('SIGTERM'); } catch { /* gone */ } }
     app.quit();
   });

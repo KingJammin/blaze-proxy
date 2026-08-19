@@ -1013,10 +1013,17 @@ function start() {
       const mitmPort = Number(cfg.transparent.port || 8799);
       mitm = createMitmServer({ blazePort: port, onEvent: emitEvent, getConfig: () => state.cfg });
       mitm.listen(mitmPort, '127.0.0.1', () => {
-        const info = transparentLib.enable(mitmPort);
+        const info = transparentLib.enable(mitmPort, { anthropic: Boolean(cfg.transparent.anthropic) });
         console.log(`blaze-proxy transparent mode ON — proxy ${info.proxyUrl}, CA ${info.caCert}`);
         console.log('blaze-proxy: restart client apps once so they pick up the new environment');
         emitEvent({ kind: 'transparent', route: 'enabled', dest: info.proxyUrl, status: 200 });
+        // At login we lose the race against macOS restoring the Codex clients,
+        // so the interesting case is not "did we start" but "is anything still
+        // bypassing us". Report it rather than let it look healthy.
+        const bypassing = transparentLib.warnStaleClients(transparentLib.readMarker(), mitmPort);
+        if (bypassing.length) {
+          emitEvent({ kind: 'transparent', route: 'stale-clients', status: 0, model: `${bypassing.length} client build(s) not routed` });
+        }
       });
       mitm.on('error', (err) => {
         console.error(`blaze-proxy: transparent listener failed (${err.message}) — clearing environment`);
